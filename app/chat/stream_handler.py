@@ -205,11 +205,33 @@ class StreamHandler:
                 })
             
             # 2. 根据路由结果调用不同模块
-            if route_result.get("mode") == "single":
-                # 单 Agent 任务（传递路由分析结果）
+            # 获取 Router 的分析结果
+            understanding = route_result.get("understanding", f"用户想要{message}")
+            analysis = route_result.get("analysis", "")
+            plan = route_result.get("plan", [])
+            
+            # 构建历史上下文
+            history_context = self._build_history_context()
+            
+            # 判断是否需要按计划执行
+            if route_result.get("mode") == "single" and plan and len(plan) > 1:
+                # 多步骤任务，按计划执行
+                async for event in self._execute_plan(message, plan, understanding, analysis, history_context, trace):
+                    yield event
+            elif route_result.get("mode") == "single":
+                # 单步骤任务，使用传统方式
+                # 构建路由上下文
+                route_info = ""
+                if understanding:
+                    route_info += f"问题理解：{understanding}\n"
+                if analysis:
+                    route_info += f"分析：{analysis}\n"
+                
                 async for event in self._process_single(
                     message, route_result.get("agent", "tool"), image_url, trace,
-                    route_context=route_result
+                    route_context=route_result,
+                    route_info=route_info,
+                    history_context=history_context
                 ):
                     yield event
             else:
@@ -256,13 +278,195 @@ class StreamHandler:
             
             yield self._format_sse("answer", friendly_msg, "提示")
     
+    async def _execute_plan(
+        self, 
+        message: str, 
+        plan: list, 
+        understanding: str, 
+        analysis: str, 
+        history_context: str, 
+        trace
+    ) -> AsyncGenerator[str, None]:
+        """
+        按照 Router 的计划逐步执行任务
+        
+        Args:
+            message: 用户原始问题
+            plan: 执行计划 [{action, tool, ...}]
+            understanding: 问题理解
+            analysis: 问题分析
+            history_context: 历史上下文
+            trace: LangFuse 追踪
+        
+        Yields:
+            SSE 格式的数据
+        """
+        print(f"[StreamHandler] 按计划执行 {len(plan)} 个步骤")
+        
+        step_results = []  # 存储每个步骤的结果
+        
+        for i, step in enumerate(plan):
+            action = step.get("action", "")
+            tool = step.get("tool", "llm")
+            
+            # 输出步骤开始
+            yield self._format_sse("processing", f"步骤 {i+1}/{len(plan)}: {action}...", f"步骤 {i+1}")
+            
+            print(f"[StreamHandler] 执行步骤 {i+1}: {action} (工具: {tool})")
+            
+            # 构建步骤上下文（包含之前的步骤结果）
+            step_context = f"问题理解：{understanding}\n"
+            if analysis:
+                step_context += f"分析：{analysis}\n"
+            if step_results:
+                step_context += "\n之前的执行结果：\n"
+                for j, prev_result in enumerate(step_results):
+                    step_context += f"步骤 {j+1}: {prev_result}\n"
+            step_context += f"\n当前任务：{action}"
+            
+            # 根据工具类型执行
+            step_result = None
+            
+            if tool == "nl2sql":
+                step_result = await self._execute_step_nl2sql(step_context, message)
+            elif tool == "rag":
+                step_result = await self._execute_step_rag(step_context, message)
+            elif tool == "llm":
+                step_result = await self._execute_step_llm(step_context, message, history_context)
+            elif tool == "tool":
+                step_result = await self._execute_step_tool(step_context, message)
+            else:
+                step_result = await self._execute_step_llm(step_context, message, history_context)
+            
+            if step_result and step_result.get("success"):
+                step_results.append(step_result.get("result", ""))
+                yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
+            else:
+                error = step_result.get("error", "未知错误") if step_result else "执行失败"
+                step_results.append(f"执行失败: {error}")
+                yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败: {error}", f"步骤 {i+1}")
+        
+        # 汇总所有步骤结果
+        yield self._format_sse("processing", "正在汇总结果...", "汇总")
+        
+        final_result = await self._summarize_plan_results(message, understanding, step_results)
+        
+        # 收集 AI 回复
+        self._ai_response_parts.append(final_result)
+        self._ai_response_data_type = "text"
+        
+        yield self._format_sse("answer", final_result, "最终答案")
+    
+    async def _execute_step_nl2sql(self, context: str, original_task: str) -> dict:
+        """执行 NL2SQL 步骤"""
+        try:
+            from app.multi_agent.nl2sql_agent import NL2SQLAgent
+            
+            agent = NL2SQLAgent()
+            result = await agent.execute(context, self.user_context)
+            
+            return {
+                "success": result.success,
+                "result": result.result if result.success else "",
+                "error": result.error if not result.success else ""
+            }
+        except Exception as e:
+            return {"success": False, "result": "", "error": str(e)}
+    
+    async def _execute_step_rag(self, context: str, original_task: str) -> dict:
+        """执行 RAG 步骤"""
+        try:
+            from app.multi_agent.rag_agent import RAGAgent
+            
+            agent = RAGAgent()
+            result = await agent.execute(context, self.user_context)
+            
+            return {
+                "success": result.success,
+                "result": result.result if result.success else "",
+                "error": result.error if not result.success else ""
+            }
+        except Exception as e:
+            return {"success": False, "result": "", "error": str(e)}
+    
+    async def _execute_step_llm(self, context: str, original_task: str, history_context: str) -> dict:
+        """执行 LLM 步骤"""
+        try:
+            from app.multi_agent.llm_agent import LLMAgent
+            
+            agent = LLMAgent()
+            result = await agent.execute(context, self.user_context, history_context=history_context)
+            
+            return {
+                "success": result.success,
+                "result": result.result if result.success else "",
+                "error": result.error if not result.success else ""
+            }
+        except Exception as e:
+            return {"success": False, "result": "", "error": str(e)}
+    
+    async def _execute_step_tool(self, context: str, original_task: str) -> dict:
+        """执行 Tool 步骤"""
+        try:
+            from app.tools.agent_loop import run_agent
+            
+            result = await run_agent(
+                question=context,
+                user_context=self.user_context,
+                max_iterations=3,
+            )
+            
+            return {
+                "success": result.get("success", False),
+                "result": result.get("answer", ""),
+                "error": result.get("error", "")
+            }
+        except Exception as e:
+            return {"success": False, "result": "", "error": str(e)}
+    
+    async def _summarize_plan_results(self, task: str, understanding: str, step_results: list) -> str:
+        """汇总计划执行结果"""
+        try:
+            from app.llm import get_chat_llm
+            from langchain_core.messages import HumanMessage
+            from datetime import datetime
+            
+            llm = get_chat_llm()
+            current_date = datetime.now().strftime("%Y年%m月%d日")
+            
+            results_text = "\n".join([f"步骤 {i+1}: {r}" for i, r in enumerate(step_results)])
+            
+            prompt = f"""你是一个专业的店铺智能助手。请根据以下执行结果，给用户一个完整的回答。
+
+当前日期：{current_date}
+用户问题：{task}
+问题理解：{understanding}
+
+执行结果：
+{results_text}
+
+要求：
+1. 直接回答用户问题，不要提及执行过程
+2. 如果有数据，直接给出数据和分析
+3. 如果需要预测/估算，基于已有数据进行计算
+4. 使用友好、专业的语气回答
+5. 支持 Markdown 格式"""
+            
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            return response.content
+        except Exception as e:
+            # 降级：直接返回结果
+            return "\n\n".join(step_results)
+    
     async def _process_single(
         self, 
         message: str, 
         agent_type: str, 
         image_url: str, 
         trace,
-        route_context: dict = None
+        route_context: dict = None,
+        route_info: str = "",
+        history_context: str = ""
     ) -> AsyncGenerator[str, None]:
         """
         处理单 Agent 任务
@@ -273,28 +477,75 @@ class StreamHandler:
             image_url: 图像 URL
             trace: LangFuse 追踪
             route_context: 路由分析结果（包含 understanding、plan 等）
+            route_info: 格式化的路由上下文
+            history_context: 历史上下文
         
         Yields:
             SSE 格式的数据
         """
         if agent_type == "rag":
-            async for event in self._process_rag(message, trace, route_context=route_context):
+            async for event in self._process_rag(message, trace, route_context=route_context, route_info=route_info, history_context=history_context):
                 yield event
         
         elif agent_type == "nl2sql":
-            async for event in self._process_nl2sql(message, trace, route_context=route_context):
+            async for event in self._process_nl2sql(message, trace, route_context=route_context, route_info=route_info, history_context=history_context):
                 yield event
         
         elif agent_type == "tool":
-            async for event in self._process_tool(message, trace, route_context=route_context):
+            async for event in self._process_tool(message, trace, route_context=route_context, route_info=route_info, history_context=history_context):
+                yield event
+        
+        elif agent_type == "llm":
+            async for event in self._process_llm(message, trace, route_info=route_info, history_context=history_context):
                 yield event
         
         elif agent_type == "vision":
             async for event in self._process_vision(message, image_url, trace):
                 yield event
         
+        elif agent_type == "llm":
+            async for event in self._process_llm(message, trace, route_info=route_info, history_context=history_context):
+                yield event
+        
         else:
             yield self._format_sse("error", f"未知的 Agent 类型: {agent_type}", "错误")
+    
+    async def _process_llm(self, message: str, trace, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
+        """
+        处理 LLM 任务（上下文分析、总结建议等）
+        
+        Args:
+            message: 用户消息
+            trace: LangFuse 追踪
+            route_info: 格式化的路由上下文
+            history_context: 历史上下文
+        
+        Yields:
+            SSE 格式的数据
+        """
+        yield self._format_sse("processing", "正在分析...", "分析")
+        
+        try:
+            from app.multi_agent.llm_agent import LLMAgent
+            
+            agent = LLMAgent()
+            result = await agent.execute(message, self.user_context, route_info=route_info, history_context=history_context)
+            
+            if result.success:
+                self._ai_response_parts.append(result.result)
+                self._ai_response_data_type = "text"
+                yield self._format_sse("answer", result.result, "回答")
+            else:
+                friendly_msg = "抱歉，无法回答您的问题，请稍后重试。"
+                self._ai_response_parts.append(friendly_msg)
+                self._ai_response_data_type = "text"
+                yield self._format_sse("answer", friendly_msg, "提示")
+        except Exception as e:
+            print(f"[StreamHandler] LLM 处理失败: {str(e)}")
+            friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
+            self._ai_response_parts.append(friendly_msg)
+            self._ai_response_data_type = "text"
+            yield self._format_sse("answer", friendly_msg, "提示")
     
     async def _process_multi(
         self, 
@@ -403,14 +654,16 @@ class StreamHandler:
             self._ai_response_data_type = "text"
             yield self._format_sse("answer", friendly_msg, "提示")
     
-    async def _process_rag(self, message: str, trace, route_context: dict = None) -> AsyncGenerator[str, None]:
+    async def _process_rag(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
         处理 RAG 任务（调用 RAGAgent，支持互联网搜索和历史上下文）
         
         Args:
             message: 用户消息
             trace: LangFuse 追踪
-            route_context: 路由分析结果（包含 understanding、plan 等）
+            route_context: 路由分析结果
+            route_info: 格式化的路由上下文
+            history_context: 历史上下文
         
         Yields:
             SSE 格式的数据
@@ -419,16 +672,6 @@ class StreamHandler:
         
         try:
             from app.multi_agent.rag_agent import RAGAgent
-            
-            # 构建历史上下文
-            history_context = self._build_history_context()
-            
-            # 构建路由上下文
-            route_info = ""
-            if route_context:
-                understanding = route_context.get("understanding", "")
-                if understanding:
-                    route_info = f"问题理解：{understanding}"
             
             agent = RAGAgent()
             result = await agent.execute(
@@ -481,7 +724,7 @@ class StreamHandler:
             
             yield self._format_sse("answer", friendly_msg, "提示")
     
-    async def _process_nl2sql(self, message: str, trace, route_context: dict = None) -> AsyncGenerator[str, None]:
+    async def _process_nl2sql(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
         处理 NL2SQL 任务（调用 NL2SQLAgent，带自动修复和历史上下文）
         
@@ -489,6 +732,8 @@ class StreamHandler:
             message: 用户消息
             trace: LangFuse 追踪
             route_context: 路由分析结果（包含 understanding、plan 等）
+            route_info: 格式化的路由上下文
+            history_context: 历史上下文
         
         Yields:
             SSE 格式的数据
@@ -497,24 +742,6 @@ class StreamHandler:
         
         try:
             from app.multi_agent.nl2sql_agent import NL2SQLAgent
-            
-            # 构建历史上下文
-            history_context = self._build_history_context()
-            
-            # 构建路由上下文（Router 的分析结果）
-            route_info = ""
-            if route_context:
-                understanding = route_context.get("understanding", "")
-                analysis = route_context.get("analysis", "")
-                plan = route_context.get("plan", [])
-                
-                if understanding:
-                    route_info += f"问题理解：{understanding}\n"
-                if analysis:
-                    route_info += f"分析：{analysis}\n"
-                if plan:
-                    plan_items = [f"- {step.get('action', '')}" for step in plan]
-                    route_info += f"执行计划：\n" + "\n".join(plan_items) + "\n"
             
             agent = NL2SQLAgent()
             result = await agent.execute(
@@ -567,14 +794,16 @@ class StreamHandler:
             
             yield self._format_sse("answer", friendly_msg, "提示")
     
-    async def _process_tool(self, message: str, trace, route_context: dict = None) -> AsyncGenerator[str, None]:
+    async def _process_tool(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
         处理 Tool 任务
         
         Args:
             message: 用户消息
             trace: LangFuse 追踪
-            route_context: 路由分析结果（包含 understanding、plan 等）
+            route_context: 路由分析结果
+            route_info: 格式化的路由上下文
+            history_context: 历史上下文
         
         Yields:
             SSE 格式的数据
@@ -584,20 +813,10 @@ class StreamHandler:
         try:
             from app.tools.agent_loop import run_agent
             
-            # 构建历史上下文
-            history_context = self._build_history_context()
-            
-            # 构建路由上下文
-            route_info = ""
-            if route_context:
-                understanding = route_context.get("understanding", "")
-                if understanding:
-                    route_info = f"问题理解：{understanding}"
-            
             # 合并上下文
-            combined_context = history_context
-            if route_info:
-                combined_context = f"{route_info}\n\n{history_context}" if history_context else route_info
+            combined_context = route_info
+            if history_context:
+                combined_context = f"{route_info}\n\n{history_context}" if route_info else history_context
             
             result = await run_agent(
                 question=message,

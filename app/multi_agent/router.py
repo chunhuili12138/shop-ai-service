@@ -1,10 +1,6 @@
 """
-智能路由模块
-判断任务复杂度，选择单 Agent 或 Supervisor 调度
-支持任务拆分，将复杂任务拆分成多个子任务
-支持有顺序的步骤执行（串行/并行混合）
-支持计划缓存，相似问题复用计划
-支持 Skills 预设任务匹配
+智能路由模块（优化版）
+使用 LLM 一次性完成问题理解和任务分配
 """
 
 import json
@@ -318,15 +314,24 @@ TASK_SPLIT_PROMPT = """分析以下复杂任务，将其拆分成多个子任务
 
 class TaskRouter:
     """
-    智能路由 - 判断任务复杂度
+    智能路由（优化版）
     
+    使用 LLM 判断问题类型，避免关键词匹配的局限性
     规则：
-    1. 简单任务：单个 Agent 可以处理
-    2. 复杂任务：需要多个 Agent 协作
-    3. 含图像的任务：直接使用 Vision Agent
-    4. 复杂任务支持拆分成多个子任务
-    5. 支持有顺序的步骤执行（串行/并行混合）
+    1. 上下文相关问题 → LLM Agent
+    2. 知识性问题 → RAG Agent
+    3. 数据查询问题 → NL2SQL Agent
+    4. 工具操作问题 → Tool Agent
+    5. 复杂问题 → Supervisor（多 Agent 协作）
     """
+    
+    # 上下文相关关键词（这些词通常表示用户在追问之前的内容）
+    CONTEXT_KEYWORDS = [
+        "这个", "那个", "它", "上面", "之前", "刚才",
+        "是什么意思", "为什么", "能解释",
+        "是吗", "对吗", "吗",
+        "重新回答", "再回答", "换个方式",
+    ]
     
     def __init__(self):
         self._llm = None
@@ -337,6 +342,133 @@ class TaskRouter:
         if self._llm is None:
             self._llm = get_chat_llm()
         return self._llm
+    
+    def _is_context_question(self, task: str, history_context: str = "") -> bool:
+        """判断是否是上下文相关问题"""
+        if not history_context:
+            return False
+        
+        task_lower = task.lower()
+        
+        # 检查是否包含上下文关键词
+        for keyword in self.CONTEXT_KEYWORDS:
+            if keyword in task_lower:
+                return True
+        
+        # 检查是否是短问题（可能是省略句）
+        if len(task) < 10 and any(kw in history_context for kw in ["用户", "助手"]):
+            return True
+        
+        return False
+    
+    async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
+        """
+        路由任务到合适的 Agent（使用 LLM 判断）
+        """
+        # 1. 图像任务
+        if has_image:
+            return {
+                "mode": "single",
+                "agent": AgentType.VISION,
+                "reasoning": "包含图像，使用 Vision Agent 处理",
+                "understanding": f"用户想要{task}",
+                "analysis": "",
+                "plan": [{"step": 1, "action": task, "tool": "vision", "is_critical": True}],
+                "complexity": "simple"
+            }
+        
+        # 提取历史上下文
+        history_context = ""
+        if shop_context and "历史对话" in shop_context:
+            history_context = shop_context
+        
+        # 2. 上下文相关问题
+        if self._is_context_question(task, history_context):
+            return {
+                "mode": "single",
+                "agent": AgentType.LLM,
+                "reasoning": "上下文相关问题，使用 LLM 基于历史回答",
+                "understanding": f"用户在追问之前对话中的内容",
+                "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
+                "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
+                "complexity": "simple"
+            }
+        
+        # 3. 使用 LLM 判断问题类型
+        try:
+            from langchain_core.messages import HumanMessage
+            
+            prompt = f"""分析用户问题，判断应该使用哪个 Agent 处理。
+
+用户问题：{task}
+
+可用 Agent：
+- rag: 知识问答（定义、解释、建议、规则、方法论、实时信息等）
+- nl2sql: 数据查询（营业额、顾客数、库存、支出、收入等具体数据）
+- tool: 工具调用（查询顾客信息、排班表、优惠券等）
+- llm: 上下文分析、总结建议（基于已有信息回答）
+
+判断规则：
+1. 如果问题需要查询具体数据（如"多少"、"金额"、"数量"）→ nl2sql
+2. 如果问题需要知识解释（如"什么是"、"如何"）→ rag
+3. 如果问题需要实时信息（如"天气"、"新闻"）→ rag
+4. 如果问题需要分析总结（如"分析"、"建议"）→ llm
+5. 如果问题涉及多个步骤 → multi
+
+只返回 JSON 格式：
+{{"agent": "rag/nl2sql/tool/llm", "reasoning": "判断原因"}}"""
+            
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            result = safe_parse_json(response.content.strip())
+            
+            if result and "agent" in result:
+                agent_type = result["agent"]
+                reasoning = result.get("reasoning", "")
+                
+                # 映射 Agent 类型
+                agent_map = {
+                    "rag": AgentType.RAG,
+                    "nl2sql": AgentType.NL2SQL,
+                    "tool": AgentType.TOOL,
+                    "llm": AgentType.LLM,
+                    "multi": None,
+                }
+                
+                agent = agent_map.get(agent_type, AgentType.LLM)
+                
+                if agent_type == "multi":
+                    return {
+                        "mode": "multi",
+                        "agent": None,
+                        "reasoning": reasoning,
+                        "understanding": f"用户想要{task}",
+                        "analysis": "",
+                        "plan": [],
+                        "complexity": "complex"
+                    }
+                else:
+                    return {
+                        "mode": "single",
+                        "agent": agent,
+                        "reasoning": reasoning,
+                        "understanding": f"用户想要{task}",
+                        "analysis": "",
+                        "plan": [{"step": 1, "action": task, "tool": agent_type, "is_critical": True}],
+                        "complexity": "simple"
+                    }
+        except Exception as e:
+            print(f"[Router] LLM 路由失败: {str(e)}")
+        
+        # 4. 默认使用 LLM
+        return {
+            "mode": "single",
+            "agent": AgentType.LLM,
+            "reasoning": "默认使用 LLM 处理",
+            "understanding": f"用户想要{task}",
+            "analysis": "",
+            "plan": [{"step": 1, "action": task, "tool": "llm", "is_critical": True}],
+            "complexity": "simple"
+        }
     
     async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
         """
@@ -560,7 +692,7 @@ class TaskRouter:
         
         优先级：
         1. 匹配预设 Skill（最高成功率）
-        2. LLM 判断任务类型并拆分
+        2. 规则判断任务类型
         
         Args:
             task: 用户任务
@@ -586,7 +718,7 @@ class TaskRouter:
                     task=step.task,
                     agent=step.agent,
                     description=step.description,
-                    query=step.query,  # 传递预定义查询
+                    query=step.query,
                     depends_on=step.depends_on,
                 )
                 sub_tasks.append(sub_task)
@@ -606,7 +738,7 @@ class TaskRouter:
                 sub_tasks=sub_tasks,
             )
         
-        # 2. 使用 LLM 判断任务类型（传递 shop_context）
+        # 2. 使用规则判断任务类型
         route_result = await self.route(task, has_image, shop_context)
         
         if route_result["mode"] == "single":
@@ -619,7 +751,7 @@ class TaskRouter:
                 reasoning=route_result["reasoning"]
             )
         else:
-            # 复杂任务，拆分成多个子任务
+            # 复杂任务，使用 LLM 拆分
             sub_tasks = await self.split_task(task)
             
             # 提取所有需要的 Agent 类型

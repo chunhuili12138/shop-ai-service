@@ -41,8 +41,11 @@ class LLMAgent:
         执行 LLM 总结分析任务
         
         Args:
-            task: 用户任务（可能包含数据上下文）
+            task: 用户任务
             context: 用户上下文
+            **kwargs: 额外参数
+                - route_info: 路由分析结果
+                - history_context: 历史上下文
         
         Returns:
             执行结果
@@ -51,6 +54,10 @@ class LLMAgent:
             from datetime import datetime
             
             llm = get_chat_llm()
+            
+            # 获取额外参数
+            route_info = kwargs.get("route_info", "")
+            history_context = kwargs.get("history_context", "")
             
             # 构建包含上下文的提示词
             current_date = datetime.now().strftime("%Y年%m月%d日")
@@ -61,10 +68,25 @@ class LLMAgent:
 店铺名称：{context.shop_name or '未知'}
 用户角色：{context.role}"""
             
+            # 构建用户消息（包含上下文）
+            user_message = task
+            if route_info:
+                user_message = f"""【Router 分析结果】
+{route_info}
+
+【用户问题】
+{task}"""
+            
+            if history_context:
+                user_message = f"""【历史对话】
+{history_context}
+
+{user_message}"""
+            
             # 调用 LLM
             messages = [
                 SystemMessage(content=system_prompt),
-                HumanMessage(content=task),
+                HumanMessage(content=user_message),
             ]
             
             response = await llm.ainvoke(messages)
