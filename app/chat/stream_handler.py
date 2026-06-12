@@ -213,14 +213,17 @@ class StreamHandler:
             # 构建历史上下文
             history_context = self._build_history_context()
             
-            # 判断是否需要按计划执行
-            if route_result.get("mode") == "single" and plan and len(plan) > 1:
-                # 多步骤任务，按计划执行
+            # 判断是否按计划执行
+            if route_result.get("mode") == "single" and plan:
+                # 单任务，按计划执行（无论步骤多少）
                 async for event in self._execute_plan(message, plan, understanding, analysis, history_context, trace):
                     yield event
-            elif route_result.get("mode") == "single":
-                # 单步骤任务，使用传统方式
-                # 构建路由上下文
+            elif route_result.get("mode") == "multi":
+                # 多 Agent 任务
+                async for event in self._process_multi(message, image_url, trace):
+                    yield event
+            else:
+                # 没有计划，使用传统方式
                 route_info = ""
                 if understanding:
                     route_info += f"问题理解：{understanding}\n"
@@ -233,10 +236,6 @@ class StreamHandler:
                     route_info=route_info,
                     history_context=history_context
                 ):
-                    yield event
-            else:
-                # 多 Agent 任务
-                async for event in self._process_multi(message, image_url, trace):
                     yield event
             
             # 3. 完成
@@ -301,7 +300,12 @@ class StreamHandler:
         Yields:
             SSE 格式的数据
         """
-        print(f"[StreamHandler] 按计划执行 {len(plan)} 个步骤")
+        print(f"[StreamHandler] ========== 开始按计划执行 ==========")
+        print(f"[StreamHandler] 用户问题: {message}")
+        print(f"[StreamHandler] 问题理解: {understanding}")
+        print(f"[StreamHandler] 计划步骤数: {len(plan)}")
+        for i, step in enumerate(plan):
+            print(f"[StreamHandler]   步骤 {i+1}: {step.get('action', '')} (工具: {step.get('tool', 'llm')})")
         
         step_results = []  # 存储每个步骤的结果
         
@@ -309,10 +313,12 @@ class StreamHandler:
             action = step.get("action", "")
             tool = step.get("tool", "llm")
             
+            print(f"[StreamHandler] ----- 执行步骤 {i+1}/{len(plan)} -----")
+            print(f"[StreamHandler] 动作: {action}")
+            print(f"[StreamHandler] 工具: {tool}")
+            
             # 输出步骤开始
             yield self._format_sse("processing", f"步骤 {i+1}/{len(plan)}: {action}...", f"步骤 {i+1}")
-            
-            print(f"[StreamHandler] 执行步骤 {i+1}: {action} (工具: {tool})")
             
             # 构建步骤上下文（包含之前的步骤结果）
             step_context = f"问题理解：{understanding}\n"
@@ -324,32 +330,49 @@ class StreamHandler:
                     step_context += f"步骤 {j+1}: {prev_result}\n"
             step_context += f"\n当前任务：{action}"
             
+            print(f"[StreamHandler] 步骤上下文长度: {len(step_context)}")
+            
             # 根据工具类型执行
             step_result = None
             
             if tool == "nl2sql":
+                print(f"[StreamHandler] 调用 NL2SQL Agent...")
                 step_result = await self._execute_step_nl2sql(step_context, message)
             elif tool == "rag":
+                print(f"[StreamHandler] 调用 RAG Agent...")
                 step_result = await self._execute_step_rag(step_context, message)
             elif tool == "llm":
+                print(f"[StreamHandler] 调用 LLM Agent...")
                 step_result = await self._execute_step_llm(step_context, message, history_context)
             elif tool == "tool":
+                print(f"[StreamHandler] 调用 Tool Agent...")
                 step_result = await self._execute_step_tool(step_context, message)
             else:
+                print(f"[StreamHandler] 未知工具类型: {tool}，使用 LLM")
                 step_result = await self._execute_step_llm(step_context, message, history_context)
             
+            print(f"[StreamHandler] 步骤 {i+1} 执行结果: {step_result}")
+            
             if step_result and step_result.get("success"):
-                step_results.append(step_result.get("result", ""))
+                result_text = step_result.get("result", "")
+                step_results.append(result_text)
+                print(f"[StreamHandler] ✓ 步骤 {i+1} 成功，结果长度: {len(result_text)}")
                 yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
             else:
                 error = step_result.get("error", "未知错误") if step_result else "执行失败"
                 step_results.append(f"执行失败: {error}")
+                print(f"[StreamHandler] ✗ 步骤 {i+1} 失败: {error}")
                 yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败: {error}", f"步骤 {i+1}")
         
         # 汇总所有步骤结果
+        print(f"[StreamHandler] ========== 汇总结果 ==========")
+        print(f"[StreamHandler] 成功步骤数: {len([r for r in step_results if not r.startswith('执行失败')])}")
         yield self._format_sse("processing", "正在汇总结果...", "汇总")
         
         final_result = await self._summarize_plan_results(message, understanding, step_results)
+        
+        print(f"[StreamHandler] 最终结果长度: {len(final_result)}")
+        print(f"[StreamHandler] ========== 执行完成 ==========")
         
         # 收集 AI 回复
         self._ai_response_parts.append(final_result)
@@ -359,54 +382,73 @@ class StreamHandler:
     
     async def _execute_step_nl2sql(self, context: str, original_task: str) -> dict:
         """执行 NL2SQL 步骤"""
+        print(f"[StreamHandler:NL2SQL] 开始执行")
+        print(f"[StreamHandler:NL2SQL] 上下文: {context[:200]}...")
         try:
             from app.multi_agent.nl2sql_agent import NL2SQLAgent
             
             agent = NL2SQLAgent()
             result = await agent.execute(context, self.user_context)
             
+            print(f"[StreamHandler:NL2SQL] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
+            if not result.success:
+                print(f"[StreamHandler:NL2SQL] 错误: {result.error}")
+            
             return {
                 "success": result.success,
                 "result": result.result if result.success else "",
                 "error": result.error if not result.success else ""
             }
         except Exception as e:
+            print(f"[StreamHandler:NL2SQL] 异常: {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _execute_step_rag(self, context: str, original_task: str) -> dict:
         """执行 RAG 步骤"""
+        print(f"[StreamHandler:RAG] 开始执行")
+        print(f"[StreamHandler:RAG] 上下文: {context[:200]}...")
         try:
             from app.multi_agent.rag_agent import RAGAgent
             
             agent = RAGAgent()
             result = await agent.execute(context, self.user_context)
             
+            print(f"[StreamHandler:RAG] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
+            
             return {
                 "success": result.success,
                 "result": result.result if result.success else "",
                 "error": result.error if not result.success else ""
             }
         except Exception as e:
+            print(f"[StreamHandler:RAG] 异常: {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _execute_step_llm(self, context: str, original_task: str, history_context: str) -> dict:
         """执行 LLM 步骤"""
+        print(f"[StreamHandler:LLM] 开始执行")
+        print(f"[StreamHandler:LLM] 上下文: {context[:200]}...")
         try:
             from app.multi_agent.llm_agent import LLMAgent
             
             agent = LLMAgent()
             result = await agent.execute(context, self.user_context, history_context=history_context)
             
+            print(f"[StreamHandler:LLM] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
+            
             return {
                 "success": result.success,
                 "result": result.result if result.success else "",
                 "error": result.error if not result.success else ""
             }
         except Exception as e:
+            print(f"[StreamHandler:LLM] 异常: {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _execute_step_tool(self, context: str, original_task: str) -> dict:
         """执行 Tool 步骤"""
+        print(f"[StreamHandler:Tool] 开始执行")
+        print(f"[StreamHandler:Tool] 上下文: {context[:200]}...")
         try:
             from app.tools.agent_loop import run_agent
             
@@ -416,12 +458,15 @@ class StreamHandler:
                 max_iterations=3,
             )
             
+            print(f"[StreamHandler:Tool] 执行结果: success={result.get('success', False)}")
+            
             return {
                 "success": result.get("success", False),
                 "result": result.get("answer", ""),
                 "error": result.get("error", "")
             }
         except Exception as e:
+            print(f"[StreamHandler:Tool] 异常: {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _summarize_plan_results(self, task: str, understanding: str, step_results: list) -> str:

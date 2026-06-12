@@ -398,25 +398,38 @@ class TaskRouter:
         try:
             from langchain_core.messages import HumanMessage
             
-            prompt = f"""分析用户问题，判断应该使用哪个 Agent 处理。
+            prompt = f"""分析用户问题，判断应该使用哪个 Agent 处理，并生成执行计划。
 
 用户问题：{task}
 
 可用 Agent：
-- rag: 知识问答（定义、解释、建议、规则、方法论、实时信息等）
-- nl2sql: 数据查询（营业额、顾客数、库存、支出、收入等具体数据）
+- rag: 知识问答（定义、解释、建议、规则、方法论等）
+- nl2sql: 数据查询（营业额、顾客数、库存、支出、收入等具体数据，包括估算、预测）
 - tool: 工具调用（查询顾客信息、排班表、优惠券等）
 - llm: 上下文分析、总结建议（基于已有信息回答）
 
 判断规则：
-1. 如果问题需要查询具体数据（如"多少"、"金额"、"数量"）→ nl2sql
-2. 如果问题需要知识解释（如"什么是"、"如何"）→ rag
-3. 如果问题需要实时信息（如"天气"、"新闻"）→ rag
-4. 如果问题需要分析总结（如"分析"、"建议"）→ llm
-5. 如果问题涉及多个步骤 → multi
+1. 如果问题需要查询店铺数据（如"多少"、"金额"、"数量"、"支出"、"收入"）→ nl2sql
+2. 如果问题需要估算/预测店铺数据（如"预计"、"估算"、"预测"）→ nl2sql
+3. 如果问题需要知识解释（如"什么是"、"如何"）→ rag
+4. 如果问题需要实时信息（如"天气"、"新闻"）→ rag
+5. 如果问题需要分析总结（如"分析"、"建议"）→ llm
+6. 如果问题涉及多个步骤 → multi
 
-只返回 JSON 格式：
-{{"agent": "rag/nl2sql/tool/llm", "reasoning": "判断原因"}}"""
+重要：如果问题涉及店铺经营数据（支出、收入、顾客等），即使包含"估算"、"预计"等词，也应该使用 nl2sql。
+
+请返回 JSON 格式：
+{{
+    "agent": "rag/nl2sql/tool/llm",
+    "reasoning": "判断原因",
+    "plan": [
+        {{"step": 1, "action": "具体执行步骤描述", "tool": "nl2sql/rag/tool/llm"}}
+    ]
+}}
+
+注意：plan 中的 action 应该是具体的执行步骤，而不是原始问题。例如：
+- 用户问题："估算预计本月的总支出"
+- plan: [{{"step": 1, "action": "查询本月已发生的支出金额", "tool": "nl2sql"}}]"""
             
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
             result = safe_parse_json(response.content.strip())
@@ -424,6 +437,7 @@ class TaskRouter:
             if result and "agent" in result:
                 agent_type = result["agent"]
                 reasoning = result.get("reasoning", "")
+                llm_plan = result.get("plan", [])
                 
                 # 映射 Agent 类型
                 agent_map = {
@@ -435,6 +449,10 @@ class TaskRouter:
                 }
                 
                 agent = agent_map.get(agent_type, AgentType.LLM)
+                
+                # 构建默认计划（如果 LLM 没有返回）
+                if not llm_plan:
+                    llm_plan = [{"step": 1, "action": task, "tool": agent_type, "is_critical": True}]
                 
                 if agent_type == "multi":
                     return {
@@ -453,7 +471,7 @@ class TaskRouter:
                         "reasoning": reasoning,
                         "understanding": f"用户想要{task}",
                         "analysis": "",
-                        "plan": [{"step": 1, "action": task, "tool": agent_type, "is_critical": True}],
+                        "plan": llm_plan,
                         "complexity": "simple"
                     }
         except Exception as e:
