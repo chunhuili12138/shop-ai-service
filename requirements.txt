@@ -1,0 +1,54 @@
+# ShopCopilot AI Service Dependencies
+# Python 3.10+ required
+
+# ========== Web Framework ==========
+fastapi==0.115.6
+python-multipart>=0.0.9
+uvicorn[standard]==0.34.0
+pydantic==2.10.4
+pydantic-settings==2.7.1
+
+# ========== LangChain Core ==========
+langchain==0.3.14
+langchain-core==0.3.29
+langchain-community==0.3.14
+langchain-openai==0.3.0
+
+# ========== LangGraph ==========
+langgraph==0.2.60
+
+# ========== Embedding & Vector Store ==========
+langchain-chroma==0.2.2
+chromadb==0.5.23
+
+# ========== Hybrid Retrieval ==========
+rank_bm25==0.2.2
+jieba==0.42.1
+
+# ========== Database ==========
+sqlalchemy==2.0.36
+pymysql==1.1.1
+cryptography==44.0.0
+redis==5.0.4
+
+# ========== SQL Parsing ==========
+sqlglot>=26.0.0
+
+# ========== Document Processing ==========
+pymupdf==1.25.1
+
+# ========== Monitoring ==========
+langfuse==2.59.7
+
+# ========== Evaluation ==========
+ragas==0.4.3
+
+# ========== Utilities ==========
+python-dotenv==1.0.1
+httpx==0.28.1
+aiofiles==24.1.0
+schedule==1.2.2
+
+# ========== Development ==========
+pytest==8.3.4
+pytest-asyncio==0.24.0
