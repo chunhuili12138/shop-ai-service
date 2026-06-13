@@ -231,49 +231,53 @@ def material_outbound(shop_id: int, material_id: int, quantity: float, remark: O
 def execute_material_inbound(shop_id: int, material_id: int, quantity: float, unit_price: Optional[float] = None, remark: Optional[str] = None, operator_id: Optional[int] = None) -> str:
     """
     执行物料入库操作（确认后调用）
+    使用事务包裹，确保库存更新和流水记录的原子性
     """
+    from app.nl2sql.executor import get_engine
+
+    engine = get_engine()
     try:
-        # 更新库存
-        update_sql = """
-            UPDATE inventory 
-            SET quantity = quantity + :quantity
-            WHERE material_id = :material_id AND shop_id = :shop_id
-        """
-        execute_sql(update_sql, {"quantity": quantity, "material_id": material_id, "shop_id": shop_id})
-        
-        # 记录入库流水
-        insert_sql = """
-            INSERT INTO inventory_transactions 
-            (shop_id, material_id, type, quantity, reference_type, remark, created_at)
-            VALUES (:shop_id, :material_id, 'inbound', :quantity, 'manual', :remark, NOW())
-        """
-        execute_sql(insert_sql, {
-            "shop_id": shop_id,
-            "material_id": material_id,
-            "quantity": quantity,
-            "remark": remark or "手动入库"
-        })
-        
-        # 记录操作日志
-        if operator_id:
-            log_sql = """
-                INSERT INTO operation_logs
-                (shop_id, operator_id, action, target_type, target_id, detail, created_at)
-                VALUES (:shop_id, :operator_id, 'inbound', 'material', :material_id, :detail, NOW())
-            """
-            import json
-            detail = json.dumps({
-                "quantity": quantity,
-                "unit_price": unit_price,
-                "remark": remark
-            }, ensure_ascii=False)
-            execute_sql(log_sql, {
+        with engine.begin() as conn:
+            from sqlalchemy import text
+
+            # 更新库存
+            conn.execute(text("""
+                UPDATE inventory
+                SET quantity = quantity + :quantity
+                WHERE material_id = :material_id AND shop_id = :shop_id
+            """), {"quantity": quantity, "material_id": material_id, "shop_id": shop_id})
+
+            # 记录入库流水
+            conn.execute(text("""
+                INSERT INTO inventory_transactions
+                (shop_id, material_id, type, quantity, reference_type, remark, created_at)
+                VALUES (:shop_id, :material_id, 'inbound', :quantity, 'manual', :remark, NOW())
+            """), {
                 "shop_id": shop_id,
-                "operator_id": operator_id,
                 "material_id": material_id,
-                "detail": detail
+                "quantity": quantity,
+                "remark": remark or "手动入库"
             })
-        
+
+            # 记录操作日志
+            if operator_id:
+                import json as _json
+                detail = _json.dumps({
+                    "quantity": quantity,
+                    "unit_price": unit_price,
+                    "remark": remark
+                }, ensure_ascii=False)
+                conn.execute(text("""
+                    INSERT INTO operation_logs
+                    (shop_id, operator_id, action, target_type, target_id, detail, created_at)
+                    VALUES (:shop_id, :operator_id, 'inbound', 'material', :material_id, :detail, NOW())
+                """), {
+                    "shop_id": shop_id,
+                    "operator_id": operator_id,
+                    "material_id": material_id,
+                    "detail": detail
+                })
+
         return f"入库成功，数量: {quantity}"
     except Exception as e:
         return f"入库失败: {str(e)}"
@@ -282,48 +286,52 @@ def execute_material_inbound(shop_id: int, material_id: int, quantity: float, un
 def execute_material_outbound(shop_id: int, material_id: int, quantity: float, remark: Optional[str] = None, operator_id: Optional[int] = None) -> str:
     """
     执行物料出库操作（确认后调用）
+    使用事务包裹，确保库存更新和流水记录的原子性
     """
+    from app.nl2sql.executor import get_engine
+
+    engine = get_engine()
     try:
-        # 更新库存
-        update_sql = """
-            UPDATE inventory 
-            SET quantity = quantity - :quantity
-            WHERE material_id = :material_id AND shop_id = :shop_id
-        """
-        execute_sql(update_sql, {"quantity": quantity, "material_id": material_id, "shop_id": shop_id})
-        
-        # 记录出库流水
-        insert_sql = """
-            INSERT INTO inventory_transactions 
-            (shop_id, material_id, type, quantity, reference_type, remark, created_at)
-            VALUES (:shop_id, :material_id, 'outbound', :quantity, 'manual', :remark, NOW())
-        """
-        execute_sql(insert_sql, {
-            "shop_id": shop_id,
-            "material_id": material_id,
-            "quantity": quantity,
-            "remark": remark or "手动出库"
-        })
-        
-        # 记录操作日志
-        if operator_id:
-            log_sql = """
-                INSERT INTO operation_logs
-                (shop_id, operator_id, action, target_type, target_id, detail, created_at)
-                VALUES (:shop_id, :operator_id, 'outbound', 'material', :material_id, :detail, NOW())
-            """
-            import json
-            detail = json.dumps({
-                "quantity": quantity,
-                "remark": remark
-            }, ensure_ascii=False)
-            execute_sql(log_sql, {
+        with engine.begin() as conn:
+            from sqlalchemy import text
+
+            # 更新库存
+            conn.execute(text("""
+                UPDATE inventory
+                SET quantity = quantity - :quantity
+                WHERE material_id = :material_id AND shop_id = :shop_id
+            """), {"quantity": quantity, "material_id": material_id, "shop_id": shop_id})
+
+            # 记录出库流水
+            conn.execute(text("""
+                INSERT INTO inventory_transactions
+                (shop_id, material_id, type, quantity, reference_type, remark, created_at)
+                VALUES (:shop_id, :material_id, 'outbound', :quantity, 'manual', :remark, NOW())
+            """), {
                 "shop_id": shop_id,
-                "operator_id": operator_id,
                 "material_id": material_id,
-                "detail": detail
+                "quantity": quantity,
+                "remark": remark or "手动出库"
             })
-        
+
+            # 记录操作日志
+            if operator_id:
+                import json as _json
+                detail = _json.dumps({
+                    "quantity": quantity,
+                    "remark": remark
+                }, ensure_ascii=False)
+                conn.execute(text("""
+                    INSERT INTO operation_logs
+                    (shop_id, operator_id, action, target_type, target_id, detail, created_at)
+                    VALUES (:shop_id, :operator_id, 'outbound', 'material', :material_id, :detail, NOW())
+                """), {
+                    "shop_id": shop_id,
+                    "operator_id": operator_id,
+                    "material_id": material_id,
+                    "detail": detail
+                })
+
         return f"出库成功，数量: {quantity}"
     except Exception as e:
         return f"出库失败: {str(e)}"

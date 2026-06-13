@@ -9,13 +9,21 @@ from app.config import settings
 
 
 # 创建数据库连接池
-engine = create_engine(
-    settings.MYSQL_URL,
-    poolclass=QueuePool,
-    pool_size=5,
-    max_overflow=10,
-    pool_timeout=30,
-)
+_engine = None
+
+
+def get_engine():
+    """获取数据库引擎单例"""
+    global _engine
+    if _engine is None:
+        _engine = create_engine(
+            settings.MYSQL_URL,
+            poolclass=QueuePool,
+            pool_size=5,
+            max_overflow=10,
+            pool_timeout=30,
+        )
+    return _engine
 
 
 def execute_sql(sql: str, params: dict = None) -> list[dict]:
@@ -30,7 +38,7 @@ def execute_sql(sql: str, params: dict = None) -> list[dict]:
         查询结果列表
     """
     try:
-        with engine.connect() as conn:
+        with get_engine().connect() as conn:
             result = conn.execute(text(sql), params or {})
             columns = result.keys()
             rows = result.fetchall()

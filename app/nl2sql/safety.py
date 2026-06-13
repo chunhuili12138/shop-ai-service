@@ -22,7 +22,7 @@ def validate_sql(sql: str) -> tuple[bool, str]:
     sql_upper = sql.upper().strip()
 
     # 1. 检查危险关键词
-    for keyword in settings.NL2SQL_DANGLED_KEYWORDS:
+    for keyword in settings.NL2SQL_DANGEROUS_KEYWORDS:
         if keyword in sql_upper:
             return False, f"包含危险操作: {keyword}"
 

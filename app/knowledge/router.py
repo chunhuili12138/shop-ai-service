@@ -32,10 +32,10 @@ class SyncResponse(BaseModel):
 
 
 @router.post("/sync", response_model=SyncResponse)
-async def trigger_sync(shop_id: int = 5):
+async def trigger_sync(shop_id: int):
     """
     手动触发知识库同步
-    
+
     流程：
     1. 从MySQL数据库/API导出数据
     2. 生成Markdown文档（按意图分组）

@@ -7,12 +7,12 @@ import os
 # 禁用 Chroma 遥测（必须在导入 Chroma 之前设置）
 os.environ["ANONYMIZED_TELEMETRY"] = "False"
 
+import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 import time
-import traceback
 
 from app.config import settings
 from app.chat.router import router as chat_router
@@ -20,29 +20,36 @@ from app.nl2sql.security_router import router as security_router
 from app.knowledge.router import router as knowledge_router
 from app.file.router import router as file_router
 
+# 配置日志
+logging.basicConfig(
+    level=logging.DEBUG if settings.DEBUG else logging.INFO,
+    format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+)
+logger = logging.getLogger(__name__)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """应用生命周期管理"""
-    # 启动时执行
-    print("🚀 ShopCopilot AI Service 启动中...")
-    print(f"📦 环境: {settings.ENVIRONMENT}")
-    print(f"🤖 LLM: {settings.LLM_MODEL} @ {settings.LLM_BASE_URL}")
-    print(f"📐 Embedding: {settings.EMBEDDING_MODEL} @ {settings.EMBEDDING_BASE_URL}")
-    print(f"🧠 长时记忆: {'启用' if settings.MULTI_AGENT_ENABLED else '禁用'}")
-    print(f"🤝 多 Agent 协作: {'启用' if settings.MULTI_AGENT_ENABLED else '禁用'}")
-    
+    logger.info("ShopCopilot AI Service 启动中...")
+    logger.info(f"环境: {settings.ENVIRONMENT}")
+    logger.info(f"LLM: {settings.LLM_MODEL}")
+    logger.info(f"Embedding: {settings.EMBEDDING_MODEL}")
+    logger.info(f"长时记忆: {'启用' if settings.MULTI_AGENT_ENABLED else '禁用'}")
+    logger.info(f"多 Agent 协作: {'启用' if settings.MULTI_AGENT_ENABLED else '禁用'}")
+
     # 启动定时任务
     try:
         from app.knowledge.scheduler import start_scheduler
         start_scheduler()
     except Exception as e:
-        print(f"⚠️ 定时任务启动失败: {str(e)}")
-    
+        logger.warning(f"定时任务启动失败: {str(e)}")
+
     yield
     # 关闭时执行
-    print("👋 ShopCopilot AI Service 关闭中...")
-    
+    logger.info("ShopCopilot AI Service 关闭中...")
+
     # 刷新 LangFuse 缓存
     try:
         from monitoring.langfuse_config import flush
@@ -73,24 +80,23 @@ app.add_middleware(
 async def log_requests(request: Request, call_next):
     """记录请求日志"""
     start_time = time.time()
-    
+
     # 跳过健康检查和文档的日志
     if request.url.path in ["/", "/health", "/docs", "/openapi.json"]:
         return await call_next(request)
-    
-    # 记录请求
+
     method = request.method
     path = request.url.path
-    print(f"📥 {method} {path}")
-    
+    logger.debug(f"{method} {path}")
+
     try:
         response = await call_next(request)
         duration = (time.time() - start_time) * 1000
-        print(f"📤 {method} {path} - {response.status_code} ({duration:.0f}ms)")
+        logger.info(f"{method} {path} - {response.status_code} ({duration:.0f}ms)")
         return response
     except Exception as e:
         duration = (time.time() - start_time) * 1000
-        print(f"❌ {method} {path} - 500 ({duration:.0f}ms) - {str(e)}")
+        logger.error(f"{method} {path} - 500 ({duration:.0f}ms) - {str(e)}")
         raise
 
 
@@ -98,14 +104,11 @@ async def log_requests(request: Request, call_next):
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     """全局异常处理"""
-    # 错误分类
     error_type = type(exc).__name__
     error_msg = str(exc)
-    
-    # 记录详细错误信息
-    print(f"❌ 未处理的异常: [{error_type}] {error_msg}")
-    print(traceback.format_exc())
-    
+
+    logger.error(f"未处理的异常: [{error_type}] {error_msg}", exc_info=True)
+
     # 根据错误类型返回不同的提示
     user_msg = "服务器内部错误"
     if "timeout" in error_msg.lower() or "TimeoutError" in error_type:
@@ -116,7 +119,7 @@ async def global_exception_handler(request: Request, exc: Exception):
         user_msg = "服务器资源不足，请稍后重试"
     elif settings.DEBUG:
         user_msg = f"错误: {error_msg}"
-    
+
     return JSONResponse(
         status_code=500,
         content={
@@ -153,14 +156,10 @@ async def root():
 
 @app.get("/health")
 async def health():
-    """详细健康状态"""
+    """详细健康状态（不暴露内部配置）"""
     return {
         "status": "healthy",
-        "llm_model": settings.LLM_MODEL,
-        "llm_base_url": settings.LLM_BASE_URL,
-        "embedding_model": settings.EMBEDDING_MODEL,
-        "embedding_base_url": settings.EMBEDDING_BASE_URL,
-        "vector_store": settings.VECTOR_STORE_TYPE,
+        "environment": settings.ENVIRONMENT,
         "features": {
             "memory_enabled": settings.MULTI_AGENT_ENABLED,
             "multi_agent_enabled": settings.MULTI_AGENT_ENABLED,

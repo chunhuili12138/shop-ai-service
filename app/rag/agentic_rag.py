@@ -67,7 +67,7 @@ class AgenticRAG:
         self, 
         question: str, 
         session_id: Optional[str] = None,
-        shop_id: int = 5
+        shop_id: int = 0
     ) -> dict:
         """
         智能问答（支持CRAG + Self-RAG + 追问和多轮对话）
@@ -235,7 +235,7 @@ class AgenticRAG:
         """
         original_question = pending["original_question"]
         options = pending["options"]
-        shop_id = pending.get("shop_id", 5)  # 从pending中获取shop_id
+        shop_id = pending.get("shop_id", 0)  # 从pending中获取shop_id
         
         # 增强问题
         enhanced_question = self.clarifier.handle_clarification_response(

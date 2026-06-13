@@ -79,7 +79,7 @@ class Settings(BaseSettings):
     # ========== NL2SQL 配置 ==========
     NL2SQL_MAX_ROWS: int = 100  # 查询最大返回行数
     NL2SQL_TIMEOUT: int = 30  # SQL执行超时（秒）
-    NL2SQL_DANGLED_KEYWORDS: List[str] = [
+    NL2SQL_DANGEROUS_KEYWORDS: List[str] = [
         "DROP", "DELETE", "TRUNCATE", "ALTER", "UPDATE", "INSERT"
     ]
 

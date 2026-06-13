@@ -48,6 +48,7 @@ python-dotenv==1.0.1
 httpx==0.28.1
 aiofiles==24.1.0
 schedule==1.2.2
+cachetools==5.5.0
 
 # ========== Development ==========
 pytest==8.3.4

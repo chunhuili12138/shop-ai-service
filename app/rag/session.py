@@ -142,7 +142,7 @@ class SessionManager:
         session_id: str, 
         question: str, 
         options: list[str],
-        shop_id: int = 5
+        shop_id: int = 0
     ):
         """
         保存待处理的追问状态

@@ -4,9 +4,12 @@
 """
 
 import httpx
+import asyncio
+import logging
 from typing import Optional
 from app.config import settings
 
+logger = logging.getLogger(__name__)
 
 # Java后端地址
 JAVA_BACKEND_URL = "http://localhost:8081"
@@ -15,20 +18,20 @@ JAVA_BACKEND_URL = "http://localhost:8081"
 class PackageAPIClient:
     """
     套餐API客户端
-    
+
     调用微信小程序的套餐列表接口获取最新数据
     """
 
     def __init__(self, base_url: str = None):
         self.base_url = base_url or JAVA_BACKEND_URL
 
-    def fetch_packages(self, shop_id: int) -> list[dict]:
+    async def fetch_packages(self, shop_id: int) -> list[dict]:
         """
-        从Java后端API获取套餐列表
-        
+        从Java后端API获取套餐列表（异步）
+
         Args:
             shop_id: 店铺ID
-        
+
         Returns:
             套餐列表 [{id, name, type, price, durationMinutes, description, ...}]
         """
@@ -37,25 +40,25 @@ class PackageAPIClient:
             params = {
                 "shopId": shop_id,
                 "page": 1,
-                "size": 100,  # 获取所有套餐
+                "size": 100,
             }
-            
-            with httpx.Client(timeout=10.0) as client:
-                response = client.get(url, params=params)
+
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                response = await client.get(url, params=params)
                 response.raise_for_status()
-            
+
             data = response.json()
-            
+
             if data.get("success"):
                 packages = data.get("data", {}).get("list", [])
-                print(f"[套餐API] 获取到 {len(packages)} 个套餐")
+                logger.info(f"[套餐API] 获取到 {len(packages)} 个套餐")
                 return packages
             else:
-                print(f"[套餐API] 请求失败: {data.get('msg')}")
+                logger.warning(f"[套餐API] 请求失败: {data.get('msg')}")
                 return []
-                
+
         except Exception as e:
-            print(f"[套餐API] 请求异常: {str(e)}")
+            logger.error(f"[套餐API] 请求异常: {str(e)}")
             return []
 
     def format_packages_to_markdown(self, packages: list[dict]) -> str:

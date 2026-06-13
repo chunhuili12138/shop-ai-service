@@ -36,7 +36,7 @@ class KnowledgeSync:
         for dir_path in self.intent_dirs.values():
             dir_path.mkdir(parents=True, exist_ok=True)
 
-    def sync_all(self, shop_id: int = 5) -> dict:
+    def sync_all(self, shop_id: int) -> dict:
         """
         同步所有知识库数据（按意图分组）
         

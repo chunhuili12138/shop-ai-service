@@ -4,6 +4,7 @@
 """
 
 import uuid
+import logging
 from datetime import datetime
 from fastapi import APIRouter, HTTPException, Header
 from fastapi.responses import StreamingResponse
@@ -13,6 +14,9 @@ from typing import Optional, List
 from app.common.auth import verify_token, parse_authorization
 from app.chat.stream_handler import StreamHandler
 from app.rag.session import get_session_manager
+from app.tools.permissions import is_tool_allowed
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -48,64 +52,15 @@ class ConfirmRequest(BaseModel):
 
 # ==================== 聊天接口 ====================
 
-@router.get("/stream")
-async def chat_stream_get(
-    message: str,
-    session_id: Optional[str] = None,
-    image_url: Optional[str] = None,
-    token: Optional[str] = None,
-    shop_id: Optional[str] = None,
-    authorization: Optional[str] = Header(None)
-):
-    """
-    统一聊天接口（GET方式，用于SSE连接）
-
-    EventSource 只支持 GET 请求，所以需要 GET 方式
-    Token 通过 URL 参数传递（EventSource 不支持自定义 Header）
-    """
-    try:
-        # 1. 获取 Token（优先从 URL 参数，其次从 Header）
-        auth_token = token
-        shop_id_int = int(shop_id) if shop_id else None
-        
-        if not auth_token and authorization:
-            auth_token, shop_id_int = parse_authorization(authorization)
-        
-        if not auth_token:
-            raise HTTPException(status_code=401, detail="缺少认证信息")
-        
-        # 2. 验证 Token
-        user_context = await verify_token(auth_token, shop_id_int)
-
-        # 3. 创建流式处理器（传入 session_id 以获取历史消息）
-        handler = StreamHandler(user_context, session_id=session_id)
-
-        # 4. 返回 SSE 流
-        return StreamingResponse(
-            handler.process(message, image_url),
-            media_type="text/event-stream",
-            headers={
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "X-Accel-Buffering": "no",
-                "Access-Control-Allow-Origin": "*",
-            }
-        )
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"聊天失败: {str(e)}")
-
-
 @router.post("/stream")
-async def chat_stream_post(
+async def chat_stream(
     request: ChatRequest,
     authorization: str = Header(...)
 ):
     """
-    统一聊天接口（POST方式，用于文件上传）
+    统一聊天接口（POST 方式，支持 SSE 流式响应）
 
+    Token 通过 Authorization Header 传递，安全可靠。
     自动判断任务类型，路由到合适的模块：
     - 知识问答 → RAG
     - 数据查询 → NL2SQL
@@ -135,6 +90,7 @@ async def chat_stream_post(
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"聊天失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"聊天失败: {str(e)}")
 
 
@@ -147,6 +103,7 @@ async def confirm_action(
     确认操作接口
 
     用于执行需要确认的操作（如核销、入库、退款审批等）
+    执行前校验用户角色是否有权执行该操作
     """
     try:
         # 1. 验证 Token
@@ -160,18 +117,31 @@ async def confirm_action(
         if not execute_func:
             raise HTTPException(status_code=400, detail=f"未知的操作类型: {request.action}")
 
-        # 3. 添加操作人ID
+        # 3. 权限二次校验：检查当前角色是否有权执行该操作
+        if not is_tool_allowed(user_context.role, request.action):
+            logger.warning(
+                f"权限校验失败 - user_id={user_context.user_id}, "
+                f"role={user_context.role}, action={request.action}"
+            )
+            raise HTTPException(status_code=403, detail=f"当前角色无权执行此操作: {request.action}")
+
+        # 4. 添加操作人ID
         params = request.params.copy()
         params["operator_id"] = user_context.user_id
 
-        # 4. 执行操作
+        # 5. 执行操作
         result = execute_func(**params)
 
+        logger.info(
+            f"确认操作执行成功 - user_id={user_context.user_id}, "
+            f"action={request.action}"
+        )
         return {"success": True, "message": result}
 
     except HTTPException:
         raise
     except Exception as e:
+        logger.error(f"操作失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"操作失败: {str(e)}")
 
 
@@ -179,31 +149,22 @@ async def confirm_action(
 
 @router.get("/sessions")
 async def get_sessions(authorization: str = Header(...)):
-    """
-    获取会话列表
-    """
+    """获取会话列表"""
     try:
-        # 验证 Token
         token, shop_id = parse_authorization(authorization)
-        print(f"[ChatRouter] 获取会话列表 - token: {token[:10]}..., shop_id: {shop_id}")
-        
         user_context = await verify_token(token, shop_id)
-        print(f"[ChatRouter] Token 验证成功 - user_id: {user_context.user_id}, role: {user_context.role}")
+        logger.debug(f"获取会话列表 - user_id={user_context.user_id}")
 
-        # 获取会话列表
         session_mgr = get_session_manager()
         sessions = session_mgr.get_user_sessions(user_context.user_id)
-        print(f"[ChatRouter] 获取会话列表成功 - count: {len(sessions)}")
+        logger.info(f"获取会话列表成功 - user_id={user_context.user_id}, count={len(sessions)}")
 
         return sessions
 
-    except HTTPException as e:
-        print(f"[ChatRouter] HTTP 异常 - status: {e.status_code}, detail: {e.detail}")
+    except HTTPException:
         raise
     except Exception as e:
-        print(f"[ChatRouter] 未知异常 - error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"获取会话列表失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取会话列表失败: {str(e)}")
 
 
@@ -212,22 +173,14 @@ async def create_session(
     request: CreateSessionRequest,
     authorization: str = Header(...)
 ):
-    """
-    创建新会话
-    """
+    """创建新会话"""
     try:
-        # 验证 Token
         token, shop_id = parse_authorization(authorization)
-        print(f"[ChatRouter] 创建会话 - token: {token[:10]}..., shop_id: {shop_id}")
-        
         user_context = await verify_token(token, shop_id)
-        print(f"[ChatRouter] Token 验证成功 - user_id: {user_context.user_id}, role: {user_context.role}")
 
-        # 创建会话
         session_id = str(uuid.uuid4())
         title = request.title or f"会话 {datetime.now().strftime('%m-%d %H:%M')}"
 
-        # 存储会话信息
         session_mgr = get_session_manager()
         session_mgr.create_session(
             session_id=session_id,
@@ -235,7 +188,7 @@ async def create_session(
             title=title,
         )
 
-        print(f"[ChatRouter] 创建会话成功 - session_id: {session_id}, title: {title}")
+        logger.info(f"创建会话成功 - session_id={session_id}, user_id={user_context.user_id}")
 
         return {
             "id": session_id,
@@ -245,13 +198,10 @@ async def create_session(
             "message_count": 0,
         }
 
-    except HTTPException as e:
-        print(f"[ChatRouter] HTTP 异常 - status: {e.status_code}, detail: {e.detail}")
+    except HTTPException:
         raise
     except Exception as e:
-        print(f"[ChatRouter] 未知异常 - error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"创建会话失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"创建会话失败: {str(e)}")
 
 
@@ -260,31 +210,21 @@ async def delete_session(
     session_id: str,
     authorization: str = Header(...)
 ):
-    """
-    删除会话
-    """
+    """删除会话"""
     try:
-        # 验证 Token
         token, shop_id = parse_authorization(authorization)
-        print(f"[ChatRouter] 删除会话 - session_id: {session_id}, token: {token[:10]}...")
-        
         user_context = await verify_token(token, shop_id)
-        print(f"[ChatRouter] Token 验证成功 - user_id: {user_context.user_id}")
 
-        # 删除会话
         session_mgr = get_session_manager()
         session_mgr.clear_session(session_id)
-        print(f"[ChatRouter] 删除会话成功 - session_id: {session_id}")
 
+        logger.info(f"删除会话成功 - session_id={session_id}, user_id={user_context.user_id}")
         return {"success": True, "message": "会话已删除"}
 
-    except HTTPException as e:
-        print(f"[ChatRouter] HTTP 异常 - status: {e.status_code}, detail: {e.detail}")
+    except HTTPException:
         raise
     except Exception as e:
-        print(f"[ChatRouter] 未知异常 - error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"删除会话失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"删除会话失败: {str(e)}")
 
 
@@ -293,29 +233,19 @@ async def get_session_messages(
     session_id: str,
     authorization: str = Header(...)
 ):
-    """
-    获取会话消息历史
-    """
+    """获取会话消息历史"""
     try:
-        # 验证 Token
         token, shop_id = parse_authorization(authorization)
-        print(f"[ChatRouter] 获取会话消息 - session_id: {session_id}, token: {token[:10]}...")
-        
         user_context = await verify_token(token, shop_id)
-        print(f"[ChatRouter] Token 验证成功 - user_id: {user_context.user_id}")
 
-        # 获取消息历史
         session_mgr = get_session_manager()
         history = session_mgr.get_history(session_id)
-        print(f"[ChatRouter] 获取消息历史成功 - session_id: {session_id}, count: {len(history)}")
 
+        logger.debug(f"获取消息历史 - session_id={session_id}, count={len(history)}")
         return history
 
-    except HTTPException as e:
-        print(f"[ChatRouter] HTTP 异常 - status: {e.status_code}, detail: {e.detail}")
+    except HTTPException:
         raise
     except Exception as e:
-        print(f"[ChatRouter] 未知异常 - error: {str(e)}")
-        import traceback
-        traceback.print_exc()
+        logger.error(f"获取消息历史失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"获取消息历史失败: {str(e)}")
