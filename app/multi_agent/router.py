@@ -343,6 +343,199 @@ class TaskRouter:
             self._llm = get_chat_llm()
         return self._llm
     
+    async def _check_need_clarification(self, question: str, shop_name: str = "") -> dict:
+        """
+        检查是否需要追问
+        
+        Args:
+            question: 用户问题
+            shop_name: 店铺名称（有店铺则跳过店铺相关追问）
+        
+        Returns:
+            {"need_clarify": bool, "reason": str, "missing_info": str, "clarify_message": str, "quick_questions": list}
+        """
+        question = question.strip()
+        
+        # 快速问题示例
+        default_quick_questions = [
+            "今天营业额多少？",
+            "本月经营情况如何？",
+            "有哪些套餐？",
+            "库存还有多少？",
+        ]
+        
+        # 1. 规则判断：已有店铺上下文，跳过店铺相关追问
+        if shop_name:
+            # 检查是否是店铺内部问题（不需要追问）
+            shop_internal_keywords = [
+                "营业", "开门", "关门", "下班", "打烊", "几点",
+                "套餐", "价格", "退款", "库存", "物料", "员工", "排班",
+                "营业额", "收入", "支出", "顾客", "会员",
+            ]
+            if any(kw in question for kw in shop_internal_keywords):
+                return {
+                    "need_clarify": False,
+                    "reason": "店铺内部问题，无需追问",
+                    "missing_info": "",
+                    "clarify_message": "",
+                    "quick_questions": []
+                }
+        
+        # 2. 规则判断：模糊指代
+        vague_keywords = ["这个", "那个", "它", "他们", "这些", "那些"]
+        if any(kw == question or question.startswith(kw) for kw in vague_keywords):
+            return {
+                "need_clarify": True,
+                "reason": "指代不明",
+                "missing_info": "具体对象",
+                "clarify_message": "请问您指的是什么？",
+                "quick_questions": default_quick_questions
+            }
+        
+        # 3. LLM 判断（复杂情况）
+        try:
+            prompt = f"""判断用户问题是否需要追问才能准确回答。
+
+用户问题："{question}"
+
+需要追问的情况：
+1. 问题缺少关键信息（如地点、时间、对象等）
+2. 问题有多种理解方式
+3. 问题涉及特定上下文但未说明
+
+不需要追问的情况：
+1. 问题已经很明确（如"本月营业额"）
+2. 问题涉及店铺内部数据（如"库存多少"、"套餐价格"）
+3. 问题是通用知识（如"什么是RFM模型"）
+
+只返回 JSON 格式：
+{{"need_clarify": true/false, "reason": "原因", "missing_info": "缺少的信息"}}"""
+            
+            from langchain_core.messages import HumanMessage
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            
+            from app.utils.json_parser import safe_parse_json
+            result = safe_parse_json(response.content.strip())
+            
+            if result and isinstance(result, dict):
+                result["clarify_message"] = self._generate_clarification_message(question, result.get("missing_info", ""))
+                result["quick_questions"] = default_quick_questions
+                return result
+            
+            return {"need_clarify": False, "reason": "", "missing_info": "", "clarify_message": "", "quick_questions": []}
+        except Exception as e:
+            print(f"[Router] 追问检查失败: {str(e)}")
+            return {"need_clarify": False, "reason": "", "missing_info": "", "clarify_message": "", "quick_questions": []}
+    
+    def _generate_clarification_message(self, question: str, missing_info: str) -> str:
+        """
+        生成追问消息
+        
+        Args:
+            question: 用户问题
+            missing_info: 缺少的信息
+        
+        Returns:
+            追问消息
+        """
+        if "地点" in missing_info or "位置" in missing_info or "哪里" in missing_info:
+            return f"请问您想了解哪个地方？"
+        elif "套餐" in missing_info:
+            return "请问您想了解哪个套餐？"
+        elif "时间" in missing_info:
+            return "请问您想了解哪个时间段？"
+        else:
+            return f"为了更准确地回答您的问题，请补充：{missing_info}"
+    
+    async def _check_question_validity(self, question: str) -> dict:
+        """
+        检查问题是否有效（不是无意义内容）
+        
+        Args:
+            question: 用户问题
+        
+        Returns:
+            {"is_valid": bool, "reason": str, "suggestion": str, "quick_questions": list}
+        """
+        # 快速规则检查
+        question = question.strip()
+        
+        # 默认快捷问题
+        default_quick_questions = [
+            "今天营业额多少？",
+            "本月经营情况如何？",
+            "有哪些套餐？",
+            "库存还有多少？",
+        ]
+        
+        # 1. 太短的问题（可能是无意义输入）
+        if len(question) < 2:
+            return {
+                "is_valid": False,
+                "reason": "问题太短",
+                "suggestion": "我没有理解您的意思，请问您想了解什么？",
+                "quick_questions": default_quick_questions
+            }
+        
+        # 2. 纯数字或特殊字符
+        import re
+        if re.match(r'^[\d\s\.\+\-\*\/\=\!\@\#\$\%\^\&\(\)]+$', question):
+            return {
+                "is_valid": False,
+                "reason": "纯数字或特殊字符输入",
+                "suggestion": "我没有理解您的意思，请问您想了解什么？",
+                "quick_questions": default_quick_questions
+            }
+        
+        # 3. 单个字符重复
+        if len(set(question.replace(' ', ''))) == 1:
+            return {
+                "is_valid": False,
+                "reason": "无意义的重复字符",
+                "suggestion": "我没有理解您的意思，请问您想了解什么？",
+                "quick_questions": default_quick_questions
+            }
+        
+        # 4. 使用 LLM 判断问题是否有效
+        try:
+            prompt = f"""判断以下用户输入是否是一个有效的问题或请求。
+
+用户输入："{question}"
+
+有效的输入：
+- 有明确意图的问题（如"今天营业额多少"）
+- 有明确意图的请求（如"帮我查一下库存"）
+- 简短但有意义的问候（如"你好"、"在吗"）
+
+无效的输入：
+- 无意义的字符（如"111"、"aaa"、"..."）
+- 测试输入（如"test"、"测试"）
+- 不完整的输入（如"帮我"、"查询"）
+- 纯表情符号
+
+只返回 JSON 格式：
+{{"is_valid": true/false, "reason": "原因", "suggestion": "如果无效，给用户的友好反问"}}"""
+            
+            from langchain_core.messages import HumanMessage
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            
+            from app.utils.json_parser import safe_parse_json
+            result = safe_parse_json(response.content.strip())
+            
+            if result and isinstance(result, dict):
+                # 添加快捷问题
+                result["quick_questions"] = default_quick_questions
+                # 修改 suggestion 为反问形式
+                if not result.get("is_valid") and result.get("suggestion"):
+                    if not any(kw in result["suggestion"] for kw in ["请问", "您想", "您需要"]):
+                        result["suggestion"] = "我没有理解您的意思，请问您想了解什么？"
+                return result
+            
+            return {"is_valid": True, "reason": "判断失败", "suggestion": "", "quick_questions": []}
+        except Exception as e:
+            print(f"[Router] 问题有效性检查失败: {str(e)}")
+            return {"is_valid": True, "reason": "判断失败", "suggestion": "", "quick_questions": []}
+    
     def _is_context_question(self, task: str, history_context: str = "") -> bool:
         """判断是否是上下文相关问题"""
         if not history_context:
@@ -394,7 +587,49 @@ class TaskRouter:
                 "complexity": "simple"
             }
         
-        # 3. 使用 LLM 判断问题类型
+        # 3. 检查问题是否有效（不是无意义内容）
+        validity = await self._check_question_validity(task)
+        if not validity.get("is_valid"):
+            print(f"[Router] 问题无效: {validity.get('reason')}")
+            return {
+                "mode": "clarify",
+                "agent": None,
+                "reasoning": validity.get("reason", "问题不明确"),
+                "understanding": task,
+                "analysis": "",
+                "plan": [],
+                "complexity": "simple",
+                "clarification": validity.get("suggestion", "我没有理解您的意思，请问您想了解什么？"),
+                "quick_questions": validity.get("quick_questions", [])
+            }
+        
+        # 4. 检查是否需要追问（在规划任务之前）
+        # 提取店铺名称
+        shop_name = ""
+        if shop_context:
+            for line in shop_context.split("\n"):
+                if "店铺名称" in line:
+                    shop_name = line.split("：")[-1].strip() if "：" in line else line.split(":")[-1].strip()
+                    break
+        
+        clarification = await self._check_need_clarification(task, shop_name)
+        if clarification.get("need_clarify"):
+            missing_info = clarification.get("missing_info", "")
+            print(f"[Router] 需要追问，缺少信息: {missing_info}")
+            
+            return {
+                "mode": "clarify",
+                "agent": None,
+                "reasoning": clarification.get("reason", "问题需要更多信息"),
+                "understanding": task,
+                "analysis": "",
+                "plan": [],
+                "complexity": "simple",
+                "clarification": clarification.get("clarify_message", "请问您想了解什么？"),
+                "quick_questions": clarification.get("quick_questions", [])
+            }
+        
+        # 5. 使用 LLM 判断问题类型
         try:
             from langchain_core.messages import HumanMessage
             
@@ -402,34 +637,42 @@ class TaskRouter:
 
 用户问题：{task}
 
-可用 Agent：
-- rag: 知识问答（定义、解释、建议、规则、方法论等）
-- nl2sql: 数据查询（营业额、顾客数、库存、支出、收入等具体数据，包括估算、预测）
+## 重要：plan.action 必须是实际要执行的任务
+
+**plan.action 字段必须是具体的执行任务，而不是用户的原始输入。**
+
+特别是当用户的问题是模糊指代时（如"重试上面这个问题"、"再试一次"）：
+- ❌ 错误：{{"action": "重试上面这个问题"}}
+- ✅ 正确：{{"action": "查询今天的营业额"}}（从历史对话中找到的实际任务）
+
+示例：
+- 用户说："重试上面这个问题"，历史上问过"今天营业额多少"
+- plan.action 应该是："查询今天的营业额"
+
+- 用户说："本月呢？"，历史上问过"历史总收入"
+- plan.action 应该是："查询本月的总收入"
+
+可用 Agent（tool 字段必须使用以下英文名称）：
+- rag: 知识问答、天气、新闻、实时信息、定义、解释、建议
+- nl2sql: 数据查询（营业额、支出、收入、顾客数等店铺数据）
 - tool: 工具调用（查询顾客信息、排班表、优惠券等）
 - llm: 上下文分析、总结建议（基于已有信息回答）
 
 判断规则：
-1. 如果问题需要查询店铺数据（如"多少"、"金额"、"数量"、"支出"、"收入"）→ nl2sql
-2. 如果问题需要估算/预测店铺数据（如"预计"、"估算"、"预测"）→ nl2sql
-3. 如果问题需要知识解释（如"什么是"、"如何"）→ rag
-4. 如果问题需要实时信息（如"天气"、"新闻"）→ rag
-5. 如果问题需要分析总结（如"分析"、"建议"）→ llm
-6. 如果问题涉及多个步骤 → multi
+1. 天气、新闻、实时信息 → rag
+2. 查询店铺数据 → nl2sql
+3. 定义、解释、建议 → rag 或 llm
+4. 多个步骤 → multi
 
-重要：如果问题涉及店铺经营数据（支出、收入、顾客等），即使包含"估算"、"预计"等词，也应该使用 nl2sql。
+⚠️ 重要：tool 字段必须是英文（rag/nl2sql/tool/llm），禁止使用中文！
 
-请返回 JSON 格式：
+返回 JSON：
 {{
     "agent": "rag/nl2sql/tool/llm",
-    "reasoning": "判断原因",
-    "plan": [
-        {{"step": 1, "action": "具体执行步骤描述", "tool": "nl2sql/rag/tool/llm"}}
-    ]
-}}
-
-注意：plan 中的 action 应该是具体的执行步骤，而不是原始问题。例如：
-- 用户问题："估算预计本月的总支出"
-- plan: [{{"step": 1, "action": "查询本月已发生的支出金额", "tool": "nl2sql"}}]"""
+    "reasoning": "原因",
+    "understanding": "用户想要XXX（从历史中推断的真实意图）",
+    "plan": [{{"step": 1, "action": "具体执行任务（不是用户原话）", "tool": "rag/nl2sql/tool/llm"}}]
+}}"""
             
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
             result = safe_parse_json(response.content.strip())
@@ -528,6 +771,29 @@ class TaskRouter:
             # 添加店铺上下文和历史上下文
             if shop_context:
                 prompt += f"\n\n## 上下文信息\n{shop_context}"
+            
+            # 添加明确指令：如何使用历史上下文
+            if shop_context and "历史对话" in shop_context:
+                prompt += """
+
+## 重要：处理模糊指代和重试指令
+
+当用户的问题是模糊指代（如"重试上面这个问题"、"再试一次"、"那个呢"）时：
+1. 先查看【上下文信息】中的历史对话
+2. 找到用户上一个具体的问题
+3. 将当前问题理解为那个具体问题
+
+示例：
+- 历史对话：用户问"今天营业额多少"，助手回答"¥2,580"
+- 当前问题："重试上面这个问题"
+- 正确理解：用户想要重新查询"今天营业额多少"
+- 路由：single + nl2sql（使用原始问题，而不是"重试"这个指令）
+
+- 历史对话：用户问"今天天气怎么样"，助手追问"请问您想了解哪个地方？"
+- 当前问题："嘉善"
+- 正确理解：用户想查询"嘉善天气"
+- 路由：single + rag
+"""
             
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
             

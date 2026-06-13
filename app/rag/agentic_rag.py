@@ -314,9 +314,27 @@ class AgenticRAG:
         return documents
 
     def _retrieve_by_intent(self, intent: IntentType, question: str) -> list[Document]:
-        """根据意图从对应知识库检索"""
+        """根据意图从对应知识库检索（使用混合检索）"""
         try:
-            # 获取BM25检索器
+            from app.rag.retriever import get_hybrid_retriever
+            
+            # 获取混合检索器
+            retriever = get_hybrid_retriever()
+            
+            # 使用混合检索（BM25 + 向量）
+            documents = retriever.invoke(question)
+            
+            print(f"[Agentic RAG] 混合检索返回 {len(documents)} 个文档")
+            return documents
+            
+        except Exception as e:
+            print(f"[Agentic RAG] 混合检索失败: {str(e)}")
+            # 降级到 BM25 检索
+            return self._retrieve_by_bm25(intent, question)
+    
+    def _retrieve_by_bm25(self, intent: IntentType, question: str) -> list[Document]:
+        """使用 BM25 检索（降级方案）"""
+        try:
             bm25_retriever = self._get_bm25_retriever(intent)
             
             if bm25_retriever is None:
@@ -357,7 +375,7 @@ class AgenticRAG:
             return documents
             
         except Exception as e:
-            print(f"[Agentic RAG] 检索失败: {str(e)}")
+            print(f"[Agentic RAG] BM25 检索失败: {str(e)}")
             return []
 
     def _get_bm25_retriever(self, intent: IntentType):

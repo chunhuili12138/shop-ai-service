@@ -160,3 +160,8 @@ class HybridRetriever(BaseRetriever):
 def get_retriever() -> BaseRetriever:
     """获取检索器实例"""
     return HybridRetriever()
+
+
+def get_hybrid_retriever() -> HybridRetriever:
+    """获取混合检索器实例（别名）"""
+    return HybridRetriever()

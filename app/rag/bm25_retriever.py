@@ -112,10 +112,13 @@ def load_documents_from_dir(dir_path: str) -> tuple[list[str], list[dict]]:
     for file_path in path.rglob("*.md"):
         try:
             content, file_type = parse_file(str(file_path))
-            chunks = split_document(content, file_type)
+            chunks = split_document(content)  # 只传 content，不传 file_type
             
             for chunk in chunks:
-                documents.append(chunk)
+                if isinstance(chunk, dict):
+                    documents.append(chunk.get("content", ""))
+                else:
+                    documents.append(str(chunk))
                 metadatas.append({
                     "source": str(file_path),
                     "type": file_type,

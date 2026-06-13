@@ -94,11 +94,20 @@ async def verify_token(token: str, shop_id: Optional[int] = None) -> UserContext
         url = f"{settings.BACKEND_URL}/api/auth/info"
         print(f"[Auth] 调用后台接口 - url: {url}")
         
-        async with httpx.AsyncClient() as client:
+        # 配置 httpx 客户端
+        transport = httpx.AsyncHTTPTransport(
+            retries=2,  # 重试次数
+            verify=False,  # 禁用 SSL 验证（开发环境）
+        )
+        
+        async with httpx.AsyncClient(
+            transport=transport,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            follow_redirects=True,
+        ) as client:
             response = await client.get(
                 url,
                 headers={"Authorization": authorization},
-                timeout=10.0
             )
 
         print(f"[Auth] 后台接口响应 - status: {response.status_code}")

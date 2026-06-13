@@ -175,6 +175,9 @@ class StreamHandler:
             if history_context:
                 shop_context += f"\n【历史对话】\n{history_context}\n"
             
+            print(f"[StreamHandler] 历史上下文长度: {len(history_context)}")
+            print(f"[StreamHandler] 店铺上下文长度: {len(shop_context)}")
+            
             route_result = await self.router.route(message, has_image=bool(image_url), shop_context=shop_context)
             
             # 输出问题理解
@@ -213,10 +216,27 @@ class StreamHandler:
             # 构建历史上下文
             history_context = self._build_history_context()
             
+            # 判断是否需要追问
+            if route_result.get("mode") == "clarify":
+                # 需要追问或问题无效
+                clarification = route_result.get("clarification", "请补充更多信息。")
+                self._ai_response_parts.append(clarification)
+                self._ai_response_data_type = "text"
+                yield self._format_sse("answer", clarification, "提示")
+                
+                # 发送快捷问题（前端可以显示为快捷按钮）
+                quick_questions = route_result.get("quick_questions", [])
+                if quick_questions:
+                    yield self._format_sse("quick_questions", quick_questions, "快捷问题")
+            
             # 判断是否按计划执行
-            if route_result.get("mode") == "single" and plan:
-                # 单任务，按计划执行（无论步骤多少）
-                async for event in self._execute_plan(message, plan, understanding, analysis, history_context, trace):
+            elif route_result.get("mode") == "single" and plan:
+                # 确定实际执行的任务（优先使用 understanding，而不是原始 message）
+                actual_task = understanding if understanding and understanding != f"用户想要{message}" else message
+                print(f"[StreamHandler] 实际执行任务: {actual_task}")
+                
+                # 单任务，按计划执行
+                async for event in self._execute_plan(actual_task, plan, understanding, analysis, history_context, trace):
                     yield event
             elif route_result.get("mode") == "multi":
                 # 多 Agent 任务
@@ -313,6 +333,29 @@ class StreamHandler:
             action = step.get("action", "")
             tool = step.get("tool", "llm")
             
+            # 工具名映射（中文 → 英文，兜底方案）
+            tool_map = {
+                # 中文 → 英文
+                "数据查询": "nl2sql",
+                "查询数据": "nl2sql",
+                "知识检索": "rag",
+                "知识问答": "rag",
+                "知识查询": "rag",
+                "搜索知识": "rag",
+                "工具调用": "tool",
+                "调用工具": "tool",
+                "分析总结": "llm",
+                "总结分析": "llm",
+                "分析": "llm",
+                "总结": "llm",
+                # 英文保持不变
+                "nl2sql": "nl2sql",
+                "rag": "rag",
+                "tool": "tool",
+                "llm": "llm",
+            }
+            tool = tool_map.get(tool, tool)
+            
             print(f"[StreamHandler] ----- 执行步骤 {i+1}/{len(plan)} -----")
             print(f"[StreamHandler] 动作: {action}")
             print(f"[StreamHandler] 工具: {tool}")
@@ -340,7 +383,7 @@ class StreamHandler:
                 step_result = await self._execute_step_nl2sql(step_context, message)
             elif tool == "rag":
                 print(f"[StreamHandler] 调用 RAG Agent...")
-                step_result = await self._execute_step_rag(step_context, message)
+                step_result = await self._execute_step_rag(step_context, message, history_context)
             elif tool == "llm":
                 print(f"[StreamHandler] 调用 LLM Agent...")
                 step_result = await self._execute_step_llm(step_context, message, history_context)
@@ -355,9 +398,27 @@ class StreamHandler:
             
             if step_result and step_result.get("success"):
                 result_text = step_result.get("result", "")
-                step_results.append(result_text)
-                print(f"[StreamHandler] ✓ 步骤 {i+1} 成功，结果长度: {len(result_text)}")
-                yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
+                
+                # 检查结果是否有效（不是"无法"、"抱歉"等拒绝性回答）
+                is_valid_result = self._is_valid_result(result_text, action)
+                
+                if is_valid_result:
+                    step_results.append(result_text)
+                    print(f"[StreamHandler] ✓ 步骤 {i+1} 成功，结果长度: {len(result_text)}")
+                    yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
+                else:
+                    # 结果无效，尝试切换工具
+                    print(f"[StreamHandler] 步骤 {i+1} 结果无效，尝试切换工具")
+                    alt_result = await self._try_alternative_tool(action, message, tool, history_context)
+                    
+                    if alt_result and alt_result.get("success"):
+                        step_results.append(alt_result.get("result", ""))
+                        print(f"[StreamHandler] ✓ 步骤 {i+1} 切换工具成功")
+                        yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成（切换工具）", f"步骤 {i+1}")
+                    else:
+                        step_results.append(f"执行失败: 结果无效")
+                        print(f"[StreamHandler] ✗ 步骤 {i+1} 切换工具也失败")
+                        yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败", f"步骤 {i+1}")
             else:
                 error = step_result.get("error", "未知错误") if step_result else "执行失败"
                 step_results.append(f"执行失败: {error}")
@@ -403,15 +464,22 @@ class StreamHandler:
             print(f"[StreamHandler:NL2SQL] 异常: {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
-    async def _execute_step_rag(self, context: str, original_task: str) -> dict:
+    async def _execute_step_rag(self, context: str, original_task: str, history_context: str = "") -> dict:
         """执行 RAG 步骤"""
         print(f"[StreamHandler:RAG] 开始执行")
+        print(f"[StreamHandler:RAG] 原始问题: {original_task}")
         print(f"[StreamHandler:RAG] 上下文: {context[:200]}...")
         try:
             from app.multi_agent.rag_agent import RAGAgent
             
             agent = RAGAgent()
-            result = await agent.execute(context, self.user_context)
+            # 传递原始问题、路由上下文和历史上下文
+            result = await agent.execute(
+                original_task,
+                self.user_context,
+                route_context=context,
+                history_context=history_context  # 传递历史上下文
+            )
             
             print(f"[StreamHandler:RAG] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
             
@@ -468,6 +536,111 @@ class StreamHandler:
         except Exception as e:
             print(f"[StreamHandler:Tool] 异常: {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
+    
+    def _is_valid_result(self, result: str, action: str) -> bool:
+        """
+        检查结果是否有效（不是拒绝性回答）
+        
+        Args:
+            result: 执行结果
+            action: 原始任务
+        
+        Returns:
+            是否有效
+        """
+        if not result or len(result.strip()) < 10:
+            return False
+        
+        # 检查是否是拒绝性回答
+        rejection_keywords = [
+            "无法", "不能", "抱歉", "超出", "不是我能", "不支持",
+            "无法提供", "无法获取", "无法查询", "无法回答",
+            "sorry", "cannot", "can't",
+        ]
+        
+        result_lower = result.lower()
+        for keyword in rejection_keywords:
+            if keyword in result_lower:
+                print(f"[StreamHandler] 结果包含拒绝性关键词: {keyword}")
+                return False
+        
+        return True
+    
+    async def _try_alternative_tool(self, action: str, original_task: str, failed_tool: str, history_context: str) -> dict:
+        """
+        智能切换工具（根据任务内容和失败原因选择替代工具）
+        
+        Args:
+            action: 任务描述
+            original_task: 原始用户问题
+            failed_tool: 失败的工具
+            history_context: 历史上下文
+        
+        Returns:
+            执行结果
+        """
+        print(f"[StreamHandler] 智能切换工具，原工具: {failed_tool}")
+        
+        # 分析任务内容，判断应该使用哪个工具
+        task_lower = (action + " " + original_task).lower()
+        
+        # 判断任务类型
+        is_data_query = any(kw in task_lower for kw in ["查询", "数据", "金额", "数量", "支出", "收入", "多少"])
+        is_knowledge = any(kw in task_lower for kw in ["什么是", "如何", "怎么", "定义", "解释"])
+        is_realtime = any(kw in task_lower for kw in ["天气", "新闻", "实时", "今天", "最新"])
+        
+        # 根据任务类型和失败工具，智能选择替代工具
+        alt_tool = None
+        
+        if failed_tool == "llm":
+            # LLM 失败（无法回答）
+            if is_data_query:
+                alt_tool = "nl2sql"  # 数据问题用 NL2SQL
+            elif is_realtime:
+                alt_tool = "rag"  # 实时信息用 RAG（会搜索互联网）
+            else:
+                alt_tool = "rag"  # 默认用 RAG
+        
+        elif failed_tool == "rag":
+            # RAG 失败（知识库无结果）
+            if is_data_query:
+                alt_tool = "nl2sql"  # 数据问题用 NL2SQL
+            elif is_realtime:
+                # 实时信息应该已经搜索过互联网了，用 LLM 尝试
+                alt_tool = "llm"
+            else:
+                alt_tool = "llm"
+        
+        elif failed_tool == "nl2sql":
+            # NL2SQL 失败（SQL 错误）
+            if is_knowledge:
+                alt_tool = "rag"  # 知识问题用 RAG
+            else:
+                alt_tool = "llm"  # 分析问题用 LLM
+        
+        else:
+            # 其他情况，默认用 RAG
+            alt_tool = "rag"
+        
+        print(f"[StreamHandler] 选择替代工具: {alt_tool}")
+        
+        if alt_tool:
+            result = None
+            if alt_tool == "rag":
+                result = await self._execute_step_rag(action, original_task)
+            elif alt_tool == "llm":
+                result = await self._execute_step_llm(action, original_task, history_context)
+            elif alt_tool == "nl2sql":
+                result = await self._execute_step_nl2sql(action, original_task)
+            
+            if result and result.get("success"):
+                result_text = result.get("result", "")
+                if self._is_valid_result(result_text, action):
+                    print(f"[StreamHandler] 替代工具 {alt_tool} 成功")
+                    return result
+        
+        print(f"[StreamHandler] 替代工具也失败")
+        return {"success": False, "result": "", "error": "替代工具也失败"}
     
     async def _summarize_plan_results(self, task: str, understanding: str, step_results: list) -> str:
         """汇总计划执行结果"""
@@ -837,6 +1010,43 @@ class StreamHandler:
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
             
+            yield self._format_sse("answer", friendly_msg, "提示")
+    
+    async def _process_llm(self, message: str, trace, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
+        """
+        处理 LLM 任务（上下文分析、总结建议等）
+        
+        Args:
+            message: 用户消息
+            trace: LangFuse 追踪
+            route_info: 格式化的路由上下文
+            history_context: 历史上下文
+        
+        Yields:
+            SSE 格式的数据
+        """
+        yield self._format_sse("processing", "正在分析...", "分析")
+        
+        try:
+            from app.multi_agent.llm_agent import LLMAgent
+            
+            agent = LLMAgent()
+            result = await agent.execute(message, self.user_context, route_info=route_info, history_context=history_context)
+            
+            if result.success:
+                self._ai_response_parts.append(result.result)
+                self._ai_response_data_type = "text"
+                yield self._format_sse("answer", result.result, "回答")
+            else:
+                friendly_msg = "抱歉，无法回答您的问题，请稍后重试。"
+                self._ai_response_parts.append(friendly_msg)
+                self._ai_response_data_type = "text"
+                yield self._format_sse("answer", friendly_msg, "提示")
+        except Exception as e:
+            print(f"[StreamHandler] LLM 处理失败: {str(e)}")
+            friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
+            self._ai_response_parts.append(friendly_msg)
+            self._ai_response_data_type = "text"
             yield self._format_sse("answer", friendly_msg, "提示")
     
     async def _process_tool(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
