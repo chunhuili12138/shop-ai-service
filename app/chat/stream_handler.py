@@ -5,11 +5,14 @@
 
 import json
 import time
+import logging
 from typing import AsyncGenerator, Dict, Any
 from app.common.user_context import UserContext
 from app.multi_agent.router import get_task_router
 from app.multi_agent.supervisor import get_supervisor_agent
 from monitoring.langfuse_config import create_trace, create_span
+
+logger = logging.getLogger(__name__)
 
 
 class StreamHandler:
@@ -143,7 +146,13 @@ class StreamHandler:
             from app.rag.session import get_session_manager
             session_mgr = get_session_manager()
             session_mgr.add_message(self.session_id, "user", message)
-        
+
+        print(f"[StreamHandler] ========== 收到新请求 ==========")
+        print(f"[StreamHandler] 用户消息: {message}")
+        print(f"[StreamHandler] 用户ID: {self.user_context.user_id}, 店铺ID: {self.user_context.shop_id}, 角色: {self.user_context.role}")
+        print(f"[StreamHandler] 会话ID: {self.session_id}")
+        print(f"[StreamHandler] 图片: {'有' if image_url else '无'}")
+
         # 创建追踪
         trace = create_trace("chat_stream", {
             "message": message[:200],  # 截断过长消息
@@ -179,7 +188,15 @@ class StreamHandler:
             print(f"[StreamHandler] 店铺上下文长度: {len(shop_context)}")
             
             route_result = await self.router.route(message, has_image=bool(image_url), shop_context=shop_context)
-            
+
+            # 详细记录路由决策
+            print(f"[StreamHandler] ========== 路由决策 ==========")
+            print(f"[StreamHandler] 模式: {route_result.get('mode')}")
+            print(f"[StreamHandler] Agent: {route_result.get('agent')}")
+            print(f"[StreamHandler] 推理: {route_result.get('reasoning')}")
+            print(f"[StreamHandler] 理解: {route_result.get('understanding')}")
+            print(f"[StreamHandler] 复杂度: {route_result.get('complexity')}")
+
             # 输出问题理解
             understanding = route_result.get("understanding", f"用户想要{message}")
             yield self._format_sse("thinking", understanding, "理解问题")
@@ -260,7 +277,9 @@ class StreamHandler:
             
             # 3. 完成
             duration_ms = (time.time() - start_time) * 1000
-            
+            print(f"[StreamHandler] ========== 请求处理完成 ==========")
+            print(f"[StreamHandler] 总耗时: {duration_ms:.0f}ms")
+
             if trace:
                 create_span(trace, "chat_complete", {
                     "duration_ms": duration_ms,
@@ -377,7 +396,8 @@ class StreamHandler:
             
             # 根据工具类型执行
             step_result = None
-            
+            step_start = time.time()
+
             if tool == "nl2sql":
                 print(f"[StreamHandler] 调用 NL2SQL Agent...")
                 step_result = await self._execute_step_nl2sql(step_context, message)
@@ -393,7 +413,9 @@ class StreamHandler:
             else:
                 print(f"[StreamHandler] 未知工具类型: {tool}，使用 LLM")
                 step_result = await self._execute_step_llm(step_context, message, history_context)
-            
+
+            step_duration = (time.time() - step_start) * 1000
+            print(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
             print(f"[StreamHandler] 步骤 {i+1} 执行结果: {step_result}")
             
             if step_result and step_result.get("success"):
@@ -443,90 +465,116 @@ class StreamHandler:
     
     async def _execute_step_nl2sql(self, context: str, original_task: str) -> dict:
         """执行 NL2SQL 步骤"""
-        print(f"[StreamHandler:NL2SQL] 开始执行")
-        print(f"[StreamHandler:NL2SQL] 上下文: {context[:200]}...")
+        print(f"[StreamHandler:NL2SQL] ========== 开始执行 ==========")
+        print(f"[StreamHandler:NL2SQL] 入参 original_task: {original_task}")
+        print(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context[:300]}...")
+        t0 = time.time()
         try:
             from app.multi_agent.nl2sql_agent import NL2SQLAgent
-            
+
             agent = NL2SQLAgent()
             result = await agent.execute(context, self.user_context)
-            
+
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:NL2SQL] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:NL2SQL] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
-            if not result.success:
+            if result.success:
+                print(f"[StreamHandler:NL2SQL] 输出内容: {result.result[:300]}...")
+            else:
                 print(f"[StreamHandler:NL2SQL] 错误: {result.error}")
-            
+
             return {
                 "success": result.success,
                 "result": result.result if result.success else "",
                 "error": result.error if not result.success else ""
             }
         except Exception as e:
-            print(f"[StreamHandler:NL2SQL] 异常: {str(e)}")
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:NL2SQL] 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _execute_step_rag(self, context: str, original_task: str, history_context: str = "") -> dict:
         """执行 RAG 步骤"""
-        print(f"[StreamHandler:RAG] 开始执行")
-        print(f"[StreamHandler:RAG] 原始问题: {original_task}")
-        print(f"[StreamHandler:RAG] 上下文: {context[:200]}...")
+        print(f"[StreamHandler:RAG] ========== 开始执行 ==========")
+        print(f"[StreamHandler:RAG] 入参 original_task: {original_task}")
+        print(f"[StreamHandler:RAG] 入参 context({len(context)}字符): {context[:300]}...")
+        print(f"[StreamHandler:RAG] 入参 history_context({len(history_context)}字符)")
+        t0 = time.time()
         try:
             from app.multi_agent.rag_agent import RAGAgent
-            
+
             agent = RAGAgent()
-            # 传递原始问题、路由上下文和历史上下文
             result = await agent.execute(
                 original_task,
                 self.user_context,
                 route_context=context,
-                history_context=history_context  # 传递历史上下文
+                history_context=history_context
             )
-            
+
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:RAG] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:RAG] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
-            
+            if result.success:
+                print(f"[StreamHandler:RAG] 输出内容: {result.result[:300]}...")
+
             return {
                 "success": result.success,
                 "result": result.result if result.success else "",
                 "error": result.error if not result.success else ""
             }
         except Exception as e:
-            print(f"[StreamHandler:RAG] 异常: {str(e)}")
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:RAG] 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _execute_step_llm(self, context: str, original_task: str, history_context: str) -> dict:
         """执行 LLM 步骤"""
-        print(f"[StreamHandler:LLM] 开始执行")
-        print(f"[StreamHandler:LLM] 上下文: {context[:200]}...")
+        print(f"[StreamHandler:LLM] ========== 开始执行 ==========")
+        print(f"[StreamHandler:LLM] 入参 original_task: {original_task}")
+        print(f"[StreamHandler:LLM] 入参 context({len(context)}字符): {context[:300]}...")
+        t0 = time.time()
         try:
             from app.multi_agent.llm_agent import LLMAgent
-            
+
             agent = LLMAgent()
             result = await agent.execute(context, self.user_context, history_context=history_context)
-            
+
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:LLM] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:LLM] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
-            
+            if result.success:
+                print(f"[StreamHandler:LLM] 输出内容: {result.result[:300]}...")
+
             return {
                 "success": result.success,
                 "result": result.result if result.success else "",
                 "error": result.error if not result.success else ""
             }
         except Exception as e:
-            print(f"[StreamHandler:LLM] 异常: {str(e)}")
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:LLM] 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     async def _execute_step_tool(self, context: str, original_task: str) -> dict:
         """执行 Tool 步骤"""
-        print(f"[StreamHandler:Tool] 开始执行")
-        print(f"[StreamHandler:Tool] 上下文: {context[:200]}...")
+        print(f"[StreamHandler:Tool] ========== 开始执行 ==========")
+        print(f"[StreamHandler:Tool] 入参 original_task: {original_task}")
+        print(f"[StreamHandler:Tool] 入参 context({len(context)}字符): {context[:300]}...")
+        t0 = time.time()
         try:
             from app.tools.agent_loop import run_agent
-            
+
             result = await run_agent(
                 question=context,
                 user_context=self.user_context,
                 max_iterations=3,
             )
-            
+
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:Tool] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:Tool] 执行结果: success={result.get('success', False)}")
+            if result.get("success"):
+                print(f"[StreamHandler:Tool] 输出内容: {str(result.get('answer', ''))[:300]}...")
             
             return {
                 "success": result.get("success", False),
@@ -1240,17 +1288,21 @@ class StreamHandler:
     
     def _format_sse(self, type: str, content: str, step: str, done: bool = False) -> str:
         """
-        格式化 SSE 数据
-        
+        格式化 SSE 数据（同时记录日志）
+
         Args:
             type: 数据类型（thinking/processing/tool_result/answer/done/error）
             content: 内容
             step: 步骤名称
             done: 是否完成
-        
+
         Returns:
             SSE 格式的数据
         """
+        # 截断过长内容用于日志显示
+        content_preview = content[:200] + "..." if len(content) > 200 else content
+        logger.info(f"[SSE] ➤ type={type}, step={step}, done={done}, content={content_preview}")
+
         data = {
             "type": type,
             "content": content,
