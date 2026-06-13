@@ -16,6 +16,7 @@ Day 5-6 新增：
 
 import asyncio
 import time
+import logging
 from typing import Annotated, Any, Dict, List, Optional, Sequence, TypedDict
 from dataclasses import dataclass, field
 from langchain_core.messages import (
@@ -31,6 +32,8 @@ from app.tools import TOOLS
 from app.common.user_context import UserContext
 from app.tools.permissions import get_tools_for_role
 from app.tools.prompt_templates import get_system_prompt
+
+logger = logging.getLogger(__name__)
 
 
 # ==================== 状态定义 ====================
@@ -157,12 +160,43 @@ class AgentLoop:
         self.model_type = "flash"
         self.llm = get_chat_llm_by_model(self.model_type).bind_tools(self.tools)
         
-        # 创建工具节点（自动并行执行）
+        # 创建工具节点（自动并行执行，带超时保护）
         self.tool_node = ToolNode(self.tools)
+        # 包装工具节点，添加超时控制
+        self._original_tool_node = self.tool_node
+        self.tool_node = self._wrap_tool_with_timeout(self.tool_node)
         
         # 构建状态图
         self.graph = self._build_graph()
-    
+
+    def _wrap_tool_with_timeout(self, tool_node: ToolNode):
+        """
+        包装 ToolNode，为每个工具调用添加超时保护
+
+        Args:
+            tool_node: 原始 ToolNode 实例
+
+        Returns:
+            包装后的异步函数
+        """
+        timeout_seconds = settings.AGENT_TIMEOUT
+
+        async def tool_node_with_timeout(state):
+            try:
+                return await asyncio.wait_for(
+                    tool_node.ainvoke(state),
+                    timeout=timeout_seconds
+                )
+            except asyncio.TimeoutError:
+                logger.warning(f"工具执行超时 ({timeout_seconds}s)")
+                # 返回超时错误消息，终止 Agent 循环
+                from langchain_core.messages import AIMessage
+                return {
+                    "messages": [AIMessage(content=f"工具执行超时（{timeout_seconds}秒），请尝试简化问题或稍后重试。")]
+                }
+
+        return tool_node_with_timeout
+
     def _default_system_prompt(self) -> str:
         """默认系统提示词"""
         tools_desc = self._get_tools_description()
@@ -247,7 +281,7 @@ class AgentLoop:
         try:
             response = self.llm.invoke(messages)
         except Exception as e:
-            print(f"[AgentLoop] LLM 调用失败: {str(e)}")
+            logger.error(f"LLM 调用失败: {str(e)}")
             # 返回错误消息，结束循环
             error_msg = AIMessage(content=f"抱歉，AI 服务暂时不可用，请稍后再试。错误信息：{str(e)}")
             return {
@@ -357,7 +391,7 @@ class AgentLoop:
             coro = self.graph.ainvoke(initial_state)
             final_state = await asyncio.wait_for(coro, timeout=settings.AGENT_TIMEOUT)
         except asyncio.TimeoutError:
-            print(f"[AgentLoop] 执行超时 ({settings.AGENT_TIMEOUT}s)")
+            logger.warning(f"Agent 执行超时 ({settings.AGENT_TIMEOUT}s)")
             # 返回超时结果
             return AgentLoopResult(
                 answer=f"抱歉，AI 处理超时（超过{settings.AGENT_TIMEOUT}秒），请稍后再试。",

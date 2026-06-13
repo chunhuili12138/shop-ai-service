@@ -109,6 +109,10 @@ class Settings(BaseSettings):
     BACKEND_URL: str = "http://localhost:8081"  # 后台管理系统地址
     TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒，默认5分钟）
 
+    # ========== HITL 审批阈值配置 ==========
+    HITL_REFUND_THRESHOLD: float = 100.0  # 退款超过此金额需要审批
+    HITL_TRANSFER_THRESHOLD: float = 1000.0  # 转账超过此金额需要审批
+
     # ========== 互联网搜索配置 ==========
     SEARCH_API: str = "tavily"  # 搜索引擎（tavily / duckduckgo）
     TAVILY_API_KEY: str = ""  # Tavily API Key

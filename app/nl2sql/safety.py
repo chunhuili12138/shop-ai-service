@@ -101,11 +101,19 @@ def add_shop_filter(sql: str, shop_id: int) -> str:
     """
     为SQL添加店铺过滤条件
     确保数据隔离
-    
-    注意：
-    - 主查询使用表别名（如 p.shop_id）
-    - 子查询中使用 shop_id（不带表别名）
+
+    安全说明：
+    - shop_id 必须是 int 类型（由调用方从 auth 上下文获取）
+    - 本函数使用字符串格式化插入 shop_id，因为 SQL 已由 LLM 生成
+      无法直接使用参数化占位符
+    - 如需更高安全等级，调用方应二次校验 shop_id 在用户权限范围内
     """
+    # 强制类型校验，防止字符串注入
+    if not isinstance(shop_id, int):
+        try:
+            shop_id = int(shop_id)
+        except (ValueError, TypeError):
+            raise ValueError(f"shop_id 必须是整数，收到: {type(shop_id).__name__}")
     # 检查是否已经有 shop_id 条件（支持多种格式）
     shop_id_patterns = [
         f"shop_id = {shop_id}",
@@ -171,16 +179,21 @@ def add_shop_filter(sql: str, shop_id: int) -> str:
 def _detect_main_alias(sql: str) -> str:
     """
     检测主查询的表别名
-    通常是 FROM 后面的第一个别名
+    支持：FROM table alias, FROM table AS alias, JOIN 场景
     """
-    # 匹配 FROM table_name alias 模式
-    match = re.search(r'FROM\s+\w+\s+(\w+)', sql, re.IGNORECASE)
+    # 匹配 FROM table_name alias 或 FROM table_name AS alias 模式
+    match = re.search(r'FROM\s+(\w+)\s+(?:AS\s+)?(\w+)', sql, re.IGNORECASE)
     if match:
-        alias = match.group(1)
-        # 排除 SQL 关键字
-        sql_keywords = ["WHERE", "GROUP", "ORDER", "LIMIT", "HAVING", "JOIN", "LEFT", "RIGHT", "INNER", "ON"]
-        if alias.upper() not in sql_keywords:
+        table_name = match.group(1)
+        alias = match.group(2)
+        # 排除 SQL 关键字和子查询
+        sql_keywords = [
+            "WHERE", "GROUP", "ORDER", "LIMIT", "HAVING",
+            "JOIN", "LEFT", "RIGHT", "INNER", "OUTER", "CROSS",
+            "ON", "SET", "VALUES", "INTO", "SELECT", "UNION",
+        ]
+        if alias.upper() not in sql_keywords and table_name.upper() not in sql_keywords:
             return alias
-    
+
     # 默认使用 p
     return "p"

@@ -4,10 +4,15 @@ LangFuse 可观测性配置
 """
 
 import time
+import asyncio
+import inspect
 import functools
+import logging
 from typing import Optional, Dict, Any, Callable
 from contextlib import contextmanager
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 # LangFuse 全局实例
@@ -37,9 +42,9 @@ def get_langfuse():
                 host=settings.LANGFUSE_HOST,
             )
             
-            print(f"[LangFuse] 已初始化: {settings.LANGFUSE_HOST}")
+            logger.info(f"LangFuse 已初始化: {settings.LANGFUSE_HOST}")
         except Exception as e:
-            print(f"[LangFuse] 初始化失败: {str(e)}")
+            logger.error(f"LangFuse 初始化失败: {str(e)}")
             return None
     
     return _langfuse
@@ -67,9 +72,9 @@ def get_langfuse_callback_handler():
                 host=settings.LANGFUSE_HOST,
             )
             
-            print(f"[LangFuse] 回调处理器已初始化")
+            logger.info("LangFuse 回调处理器已初始化")
         except Exception as e:
-            print(f"[LangFuse] 回调处理器初始化失败: {str(e)}")
+            logger.error(f"LangFuse 回调处理器初始化失败: {str(e)}")
             return None
     
     return _langfuse_handler
@@ -97,7 +102,7 @@ def create_trace(name: str, metadata: dict = None):
         )
         return trace
     except Exception as e:
-        print(f"[LangFuse] 创建追踪失败: {str(e)}")
+        logger.error(f"LangFuse 创建追踪失败: {str(e)}")
         return None
 
 
@@ -123,7 +128,7 @@ def create_span(trace, name: str, metadata: dict = None):
         )
         return span
     except Exception as e:
-        print(f"[LangFuse] 创建跨度失败: {str(e)}")
+        logger.error(f"LangFuse 创建跨度失败: {str(e)}")
         return None
 
 
@@ -135,50 +140,81 @@ def flush():
     if langfuse is not None:
         try:
             langfuse.flush()
-            print("[LangFuse] 缓存已刷新")
+            logger.info("LangFuse 缓存已刷新")
         except Exception as e:
-            print(f"[LangFuse] 刷新失败: {str(e)}")
+            logger.error(f"LangFuse 刷新失败: {str(e)}")
 
 
 def trace_function(name: str, metadata: dict = None):
     """
-    装饰器：自动追踪函数执行
-    
+    装饰器：自动追踪函数执行（兼容同步和异步函数）
+
     Args:
         name: 追踪名称
         metadata: 额外元数据
-    
+
     Returns:
         装饰器函数
     """
     def decorator(func: Callable):
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
-            trace = create_trace(name, metadata)
-            start_time = time.time()
-            
-            try:
-                result = await func(*args, **kwargs)
-                duration_ms = (time.time() - start_time) * 1000
-                
-                if trace:
-                    create_span(trace, "success", {
-                        "duration_ms": duration_ms,
-                        "result_type": type(result).__name__,
-                    })
-                
-                return result
-            except Exception as e:
-                duration_ms = (time.time() - start_time) * 1000
-                
-                if trace:
-                    create_span(trace, "error", {
-                        "duration_ms": duration_ms,
-                        "error": str(e),
-                    })
-                
-                raise
-        return wrapper
+        if inspect.iscoroutinefunction(func):
+            # 异步函数
+            @functools.wraps(func)
+            async def async_wrapper(*args, **kwargs):
+                trace = create_trace(name, metadata)
+                start_time = time.time()
+
+                try:
+                    result = await func(*args, **kwargs)
+                    duration_ms = (time.time() - start_time) * 1000
+
+                    if trace:
+                        create_span(trace, "success", {
+                            "duration_ms": duration_ms,
+                            "result_type": type(result).__name__,
+                        })
+
+                    return result
+                except Exception as e:
+                    duration_ms = (time.time() - start_time) * 1000
+
+                    if trace:
+                        create_span(trace, "error", {
+                            "duration_ms": duration_ms,
+                            "error": str(e),
+                        })
+
+                    raise
+            return async_wrapper
+        else:
+            # 同步函数
+            @functools.wraps(func)
+            def sync_wrapper(*args, **kwargs):
+                trace = create_trace(name, metadata)
+                start_time = time.time()
+
+                try:
+                    result = func(*args, **kwargs)
+                    duration_ms = (time.time() - start_time) * 1000
+
+                    if trace:
+                        create_span(trace, "success", {
+                            "duration_ms": duration_ms,
+                            "result_type": type(result).__name__,
+                        })
+
+                    return result
+                except Exception as e:
+                    duration_ms = (time.time() - start_time) * 1000
+
+                    if trace:
+                        create_span(trace, "error", {
+                            "duration_ms": duration_ms,
+                            "error": str(e),
+                        })
+
+                    raise
+            return sync_wrapper
     return decorator
 
 
@@ -202,7 +238,7 @@ def trace_span(name: str, metadata: dict = None):
             trace = langfuse.trace(name=name)
             span = trace.span(name=name, metadata=metadata or {})
         except Exception as e:
-            print(f"[LangFuse] 创建跨度失败: {str(e)}")
+            logger.error(f"LangFuse 创建跨度失败: {str(e)}")
     
     start_time = time.time()
     
