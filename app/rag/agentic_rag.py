@@ -10,6 +10,7 @@ Agentic RAG（增强版）
 
 from pathlib import Path
 from typing import Optional
+import logging
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.documents import Document
 from app.llm import get_chat_llm
@@ -23,6 +24,8 @@ from app.rag.self_rag import get_self_rag, GenerationGrade
 from app.rag.crag import get_crag, DocumentGrade
 from app.knowledge.package_client import get_package_client
 from app.config import settings
+
+logger = logging.getLogger(__name__)
 
 
 class AgenticRAG:
@@ -103,21 +106,21 @@ class AgenticRAG:
         intent = self.intent_router.classify_intent(question)
         intent_desc = self.intent_router.get_intent_description(intent)
         
-        print(f"[Agentic RAG] 意图: {intent.value} ({intent_desc})")
+        logger.info(f"[Agentic RAG] 意图: {intent.value} ({intent_desc})")
 
         # 2. 判断是否需要实时查询
         need_realtime = self.realtime_checker.need_realtime_query(question, intent)
         
         # 3. 获取套餐数据（实时查询或缓存）
         if need_realtime and intent == IntentType.PACKAGE:
-            print(f"[Agentic RAG] 需要实时查询套餐数据")
+            logger.info("[Agentic RAG] 需要实时查询套餐数据")
             packages = self.package_client.fetch_packages(shop_id)
             
             if packages:
                 # 使用实时数据生成回答
                 documents = self._packages_to_documents(packages)
             else:
-                print(f"[Agentic RAG] 实时查询失败，使用缓存数据")
+                logger.warning("[Agentic RAG] 实时查询失败，使用缓存数据")
                 documents = self._retrieve_by_intent(intent, question)
         else:
             # 从缓存检索
@@ -125,7 +128,7 @@ class AgenticRAG:
         
         # 4. CRAG：文档分级和精炼
         if documents:
-            print(f"[Agentic RAG] CRAG文档分级...")
+            logger.info("[Agentic RAG] CRAG文档分级...")
             crag_result = self.crag.process_documents(
                 question, 
                 documents,
@@ -133,7 +136,7 @@ class AgenticRAG:
             )
             
             if crag_result["needs_retrieval"]:
-                print(f"[Agentic RAG] CRAG触发纠正检索: {crag_result['rewritten_query']}")
+                logger.info(f"[Agentic RAG] CRAG触发纠正检索: {crag_result['rewritten_query']}")
                 # 使用改写后的查询重新检索
                 documents = self._retrieve_by_intent(intent, crag_result["rewritten_query"])
             elif crag_result["refined_context"]:
@@ -176,7 +179,7 @@ class AgenticRAG:
             }
         
         # 8. Self-RAG：生成回答并自检
-        print(f"[Agentic RAG] Self-RAG生成回答...")
+        logger.info("[Agentic RAG] Self-RAG生成回答...")
         context = "\n\n".join([doc.page_content for doc in documents[:3]])
         
         def generate_func(q, ctx):
@@ -190,7 +193,7 @@ class AgenticRAG:
         answer = self_rag_result["answer"]
         is_reliable = self_rag_result["is_reliable"]
         
-        print(f"[Agentic RAG] Self-RAG结果: reliable={is_reliable}, retries={self_rag_result['retries']}")
+        logger.info(f"[Agentic RAG] Self-RAG结果: reliable={is_reliable}, retries={self_rag_result['retries']}")
         
         # 9. 保存会话历史
         if session_id:
@@ -250,10 +253,10 @@ class AgenticRAG:
         self.session_mgr.add_message(session_id, "user", user_response)
         
         # 使用增强后的问题重新查询
-        print(f"[Agentic RAG] 原始问题: {original_question}")
-        print(f"[Agentic RAG] 用户响应: {user_response}")
-        print(f"[Agentic RAG] 增强问题: {enhanced_question}")
-        print(f"[Agentic RAG] 店铺ID: {shop_id}")
+        logger.debug(f"[Agentic RAG] 原始问题: {original_question}")
+        logger.debug(f"[Agentic RAG] 用户响应: {user_response}")
+        logger.debug(f"[Agentic RAG] 增强问题: {enhanced_question}")
+        logger.debug(f"[Agentic RAG] 店铺ID: {shop_id}")
         
         # 重新查询（不传session_id，避免重复保存）
         return self.query(enhanced_question, session_id=None, shop_id=shop_id)
@@ -324,11 +327,11 @@ class AgenticRAG:
             # 使用混合检索（BM25 + 向量）
             documents = retriever.invoke(question)
             
-            print(f"[Agentic RAG] 混合检索返回 {len(documents)} 个文档")
+            logger.info(f"[Agentic RAG] 混合检索返回 {len(documents)} 个文档")
             return documents
             
         except Exception as e:
-            print(f"[Agentic RAG] 混合检索失败: {str(e)}")
+            logger.error(f"[Agentic RAG] 混合检索失败: {str(e)}")
             # 降级到 BM25 检索
             return self._retrieve_by_bm25(intent, question)
     
@@ -338,7 +341,7 @@ class AgenticRAG:
             bm25_retriever = self._get_bm25_retriever(intent)
             
             if bm25_retriever is None:
-                print(f"[Agentic RAG] 意图 {intent.value} 无可用检索器")
+                logger.warning(f"[Agentic RAG] 意图 {intent.value} 无可用检索器")
                 return []
             
             # BM25检索
@@ -375,7 +378,7 @@ class AgenticRAG:
             return documents
             
         except Exception as e:
-            print(f"[Agentic RAG] BM25 检索失败: {str(e)}")
+            logger.error(f"[Agentic RAG] BM25 检索失败: {str(e)}")
             return []
 
     def _get_bm25_retriever(self, intent: IntentType):
@@ -406,7 +409,7 @@ class AgenticRAG:
                         "intent": intent.value,
                     })
             except Exception as e:
-                print(f"[Agentic RAG] 读取文件失败: {file_path}, 错误: {e}")
+                logger.error(f"[Agentic RAG] 读取文件失败: {file_path}, 错误: {e}")
         
         if not documents:
             return None
@@ -416,7 +419,7 @@ class AgenticRAG:
         retriever.build_index(documents, metadatas)
         self._bm25_retrievers[intent] = retriever
         
-        print(f"[Agentic RAG] 为意图 {intent.value} 加载了 {len(documents)} 个文档块")
+        logger.info(f"[Agentic RAG] 为意图 {intent.value} 加载了 {len(documents)} 个文档块")
         return retriever
 
     def _generate_answer(self, intent: IntentType, question: str, documents: list[Document]) -> str:
@@ -447,7 +450,7 @@ class AgenticRAG:
             return response.content
             
         except Exception as e:
-            print(f"[Agentic RAG] 生成回答失败: {str(e)}")
+            logger.error(f"[Agentic RAG] 生成回答失败: {str(e)}")
             return f"抱歉，处理您的问题时出现错误: {str(e)}"
 
     def _generate_answer_from_context(self, intent: IntentType, question: str, context: str) -> str:
@@ -479,7 +482,7 @@ class AgenticRAG:
             return response.content
             
         except Exception as e:
-            print(f"[Agentic RAG] 生成回答失败: {str(e)}")
+            logger.error(f"[Agentic RAG] 生成回答失败: {str(e)}")
             return f"抱歉，处理您的问题时出现错误: {str(e)}"
 
     def _calculate_confidence(self, documents: list[Document]) -> float:

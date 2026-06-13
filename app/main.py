@@ -26,6 +26,12 @@ logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
+
+# 第三方库日志级别调高，避免刷屏
+for noisy in ["httpcore", "httpx", "openai", "chromadb", "watchfiles",
+              "langchain", "langchain_core", "langfuse", "urllib3", "asyncio"]:
+    logging.getLogger(noisy).setLevel(logging.WARNING)
+
 logger = logging.getLogger(__name__)
 
 
