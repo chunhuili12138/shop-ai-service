@@ -86,38 +86,91 @@ CLARIFICATION_CHECK_PROMPT = """判断用户问题是否需要追问才能准确
 class RAGAgent:
     """
     RAG Agent - 知识问答
-    
+
     流程：
     1. 判断是否需要追问 → 是 → 返回追问提示
-    2. 实时性问题 → 直接搜索互联网
+    2. LLM 判断是否需要互联网搜索 → 是 → 搜索互联网
     3. 检索经验池 → 有结果则返回
     4. 检索知识库 → 有结果且置信度高则返回
-    5. LLM 判断 → 可以用通用知识回答则返回
-    6. 搜索互联网 → 返回结果
+    5. LLM 通用知识回答
+    6. 兜底：搜索互联网
     """
-    
-    # 需要实时信息的关键词
-    REALTIME_KEYWORDS = [
-        "今天", "今日", "昨天", "本周", "本月", "最近", "现在", "当前",
-        "新闻", "天气", "股票", "汇率", "价格", "优惠", "活动",
-        "最新", "实时", "热点", "趋势", "排行",
-    ]
-    
-    def _is_realtime_query(self, query: str) -> bool:
+
+    # 知识库覆盖范围描述（用于 LLM 判断是否需要搜索互联网）
+    KB_SCOPE = """本店铺知识库包含以下内容：
+- 套餐信息：价格、类型（单次/周卡/月卡）、时长、包含项目
+- 营业时间：开门/关门时间、节假日安排、地址、联系方式
+- 退款政策：退款条件、退款流程、退款时效
+- 店铺规则：年龄限制、安全须知、预约规则、注意事项
+- 助手介绍：我是谁、我能做什么、使用方式、服务范围
+- 经营建议：基于店铺数据的分析和建议"""
+
+    async def _should_search_web(
+        self, original_question: str, task: str, history_context: str = ""
+    ) -> bool:
         """
-        判断是否需要实时信息
-        
-        只检查原始问题，不检查增强后的问题
+        用 LLM 判断是否需要搜索互联网
+
+        替代原来的关键词匹配，避免误判（如"当前对话助手"触发"当前"关键词）
+
+        Args:
+            original_question: 用户原始问题
+            task: Router 分析后的任务描述
+            history_context: 历史上下文
+
+        Returns:
+            是否需要搜索互联网
         """
-        # 移除 Router 分析结果部分，只检查原始问题
-        if "【当前问题】" in query:
-            query = query.split("【当前问题】")[-1].strip()
-        elif "【Router 分析结果】" in query:
-            # 如果有 Router 分析结果，提取原始问题
-            lines = query.split("\n")
-            query = lines[-1].strip() if lines else query
-        
-        return any(keyword in query for keyword in self.REALTIME_KEYWORDS)
+        try:
+            from app.llm import get_chat_llm
+            from langchain_core.messages import HumanMessage
+
+            llm = get_chat_llm(temperature=0)
+
+            history_section = ""
+            if history_context:
+                history_section = f"\n【历史对话】\n{history_context}\n"
+
+            prompt = f"""判断用户的问题是否需要搜索互联网来回答。
+
+【知识库覆盖范围】
+{self.KB_SCOPE}
+{history_section}
+【Router 分析的任务】
+{task}
+
+【用户原始问题】
+{original_question}
+
+判断规则：
+1. 如果用户的问题可以用知识库中的信息回答 → 不需要搜索互联网
+2. 如果用户问的是关于助手自身的问题（如"你是谁"、"你能做什么"）→ 不需要搜索互联网
+3. 如果用户问的是通用知识问题（如"如何提高营业额"）→ 不需要搜索互联网
+4. 如果用户问的是店铺经营相关的定义、概念、方法论 → 不需要搜索互联网
+5. 只有用户明确要求实时外部信息（如"今天天气"、"最近行业新闻"、"最新市场趋势"）→ 需要搜索互联网
+
+只返回 JSON 格式：
+{{"need_search": true/false, "reason": "判断原因"}}"""
+
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+
+            import json
+            content = response.content.strip()
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                content = content[start:end].strip()
+
+            result = json.loads(content)
+            need_search = result.get("need_search", False)
+            reason = result.get("reason", "")
+
+            print(f"[RAGAgent] 互联网搜索判断: need_search={need_search}, reason={reason}")
+            return need_search
+
+        except Exception as e:
+            print(f"[RAGAgent] 互联网搜索判断失败: {str(e)}")
+            return False  # 出错时不搜索
     
     def _resolve_reference(self, task: str, history_context: str) -> str:
         """
@@ -358,25 +411,25 @@ class RAGAgent:
             return False
     
     async def _generate_llm_answer(self, question: str, history_context: str = "") -> str:
-        """让 LLM 用通用知识回答"""
+        """让 LLM 用通用知识回答（只返回知识内容，不包含角色/安全/合规）"""
         try:
             from app.llm import get_chat_llm
             from langchain_core.messages import SystemMessage, HumanMessage
             from datetime import datetime
-            
+
             llm = get_chat_llm()
             current_date = datetime.now().strftime("%Y年%m月%d日")
-            
-            system_prompt = f"""你是一个专业的店铺智能助手。
+
+            system_prompt = f"""你是一个知识检索助手。根据用户问题，返回相关的知识内容。
 
 当前日期：{current_date}
 
-重要规则：
-1. 只使用通用知识回答，不要编造具体数据
-2. 如果涉及具体数据查询，说明需要查询数据库
-3. 回答要专业、有帮助
-4. 不要提及你是 AI 模型"""
-            
+规则：
+1. 只返回与问题相关的知识内容，不要生成最终答案
+2. 不要编造数据，如果不知道请说明
+3. 返回的内容将由另一个系统进行汇总和格式化
+4. 不要添加角色扮演内容"""
+
             user_message = question
             if history_context:
                 user_message = f"""【历史对话】
@@ -384,12 +437,12 @@ class RAGAgent:
 
 【当前问题】
 {question}"""
-            
+
             response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=user_message)
             ])
-            
+
             return response.content
         except Exception as e:
             print(f"[RAGAgent] LLM 生成答案失败: {str(e)}")
@@ -485,12 +538,13 @@ class RAGAgent:
                     metadata={"need_clarification": True, "missing_info": missing_info}
                 )
             
-            # 判断是否是实时性查询
-            is_realtime = self._is_realtime_query(task)
-            
-            # 1. 实时性问题直接搜索互联网
-            if is_realtime:
-                print(f"[RAGAgent] 实时性查询，直接搜索互联网")
+            # 判断是否需要互联网搜索（LLM 判断，替代关键词匹配）
+            original_question = kwargs.get("original_question", task)
+            need_search = await self._should_search_web(original_question, task, history_context)
+
+            # 1. 需要搜索互联网
+            if need_search:
+                print(f"[RAGAgent] LLM 判断需要互联网搜索")
                 web_result = await self._search_web(task, context)
                 
                 if web_result and "搜索失败" not in web_result and len(web_result) > 50:

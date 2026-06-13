@@ -62,6 +62,7 @@ class AgenticRAG:
             IntentType.HOURS: Path("data/knowledge/hours"),
             IntentType.REFUND: Path("data/knowledge/refund"),
             IntentType.RULES: Path("data/knowledge/rules"),
+            IntentType.ABOUT: Path("data/knowledge/about"),
             IntentType.GENERAL: Path("data/knowledge/general"),
         }
         self._bm25_retrievers = {}

@@ -343,7 +343,7 @@ class StreamHandler:
         for i, step in enumerate(plan):
             print(f"[StreamHandler]   步骤 {i+1}: {step.get('action', '')} (工具: {step.get('tool', 'llm')})")
         
-        step_results = []  # 存储每个步骤的结果
+        step_results = []  # 存储每个步骤的结果（dict 格式）
         
         for i, step in enumerate(plan):
             action = step.get("action", "")
@@ -385,8 +385,9 @@ class StreamHandler:
                 step_context += f"分析：{analysis}\n"
             if step_results:
                 step_context += "\n之前的执行结果：\n"
-                for j, prev_result in enumerate(step_results):
-                    step_context += f"步骤 {j+1}: {prev_result}\n"
+                for j, prev in enumerate(step_results):
+                    status = "成功" if prev.get("success") else "失败"
+                    step_context += f"步骤 {j+1}({prev.get('tool', '')}): {status} - {prev.get('result', prev.get('error', ''))[:200]}\n"
             step_context += f"\n当前任务：{action}"
             
             print(f"[StreamHandler] 步骤上下文长度: {len(step_context)}")
@@ -422,7 +423,10 @@ class StreamHandler:
                 is_valid_result = self._is_valid_result(result_text, action)
                 
                 if is_valid_result:
-                    step_results.append(result_text)
+                    step_results.append({
+                        "action": action, "tool": tool, "success": True,
+                        "result": result_text, "error": ""
+                    })
                     print(f"[StreamHandler] ✓ 步骤 {i+1} 成功，结果长度: {len(result_text)}")
                     yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
                 else:
@@ -431,25 +435,42 @@ class StreamHandler:
                     alt_result = await self._try_alternative_tool(action, message, tool, history_context)
                     
                     if alt_result and alt_result.get("success"):
-                        step_results.append(alt_result.get("result", ""))
+                        step_results.append({
+                            "action": action, "tool": tool, "success": True,
+                            "result": alt_result.get("result", ""), "error": ""
+                        })
                         print(f"[StreamHandler] ✓ 步骤 {i+1} 切换工具成功")
                         yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成（切换工具）", f"步骤 {i+1}")
                     else:
-                        step_results.append(f"执行失败: 结果无效")
+                        step_results.append({
+                            "action": action, "tool": tool, "success": False,
+                            "result": "", "error": "结果无效"
+                        })
                         print(f"[StreamHandler] ✗ 步骤 {i+1} 切换工具也失败")
                         yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败", f"步骤 {i+1}")
             else:
                 error = step_result.get("error", "未知错误") if step_result else "执行失败"
-                step_results.append(f"执行失败: {error}")
+                step_results.append({
+                    "action": action, "tool": tool, "success": False,
+                    "result": "", "error": error
+                })
                 print(f"[StreamHandler] ✗ 步骤 {i+1} 失败: {error}")
                 yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败: {error}", f"步骤 {i+1}")
         
         # 汇总所有步骤结果
+        success_count = len([r for r in step_results if r.get("success")])
         print(f"[StreamHandler] ========== 汇总结果 ==========")
-        print(f"[StreamHandler] 成功步骤数: {len([r for r in step_results if not r.startswith('执行失败')])}")
+        print(f"[StreamHandler] 成功步骤数: {success_count}/{len(step_results)}")
         yield self._format_sse("processing", "正在汇总结果...", "汇总")
-        
-        final_result = await self._summarize_plan_results(message, understanding, step_results)
+
+        final_result = await self._final_summarize(
+            user_message=message,
+            understanding=understanding,
+            analysis=analysis,
+            plan=plan,
+            step_results=step_results,
+            history_context=history_context,
+        )
         
         print(f"[StreamHandler] 最终结果长度: {len(final_result)}")
         print(f"[StreamHandler] ========== 执行完成 ==========")
@@ -688,39 +709,61 @@ class StreamHandler:
         print(f"[StreamHandler] 替代工具也失败")
         return {"success": False, "result": "", "error": "替代工具也失败"}
     
-    async def _summarize_plan_results(self, task: str, understanding: str, step_results: list) -> str:
-        """汇总计划执行结果"""
+    async def _final_summarize(
+        self,
+        user_message: str,
+        understanding: str,
+        analysis: str,
+        plan: list,
+        step_results: list,
+        history_context: str,
+    ) -> str:
+        """
+        最终汇总步骤（独立于工具执行）
+
+        把所有上下文信息 + system_prompts 一起提交给 LLM 综合分析输出。
+        system_prompts 中的角色定义、安全规则、合规规则具有最高优先级。
+
+        Args:
+            user_message: 用户原始消息
+            understanding: Router 对问题的理解
+            analysis: Router 的分析
+            plan: 执行计划
+            step_results: 每步结果 [{action, tool, success, result, error}]
+            history_context: 历史上下文
+
+        Returns:
+            LLM 汇总生成的最终回答
+        """
         try:
             from app.llm import get_chat_llm
-            from langchain_core.messages import HumanMessage
-            from datetime import datetime
-            
+            from app.common.system_prompts import build_summarize_prompt
+            from langchain_core.messages import SystemMessage, HumanMessage
+
             llm = get_chat_llm()
-            current_date = datetime.now().strftime("%Y年%m月%d日")
-            
-            results_text = "\n".join([f"步骤 {i+1}: {r}" for i, r in enumerate(step_results)])
-            
-            prompt = f"""你是一个专业的店铺智能助手。请根据以下执行结果，给用户一个完整的回答。
 
-当前日期：{current_date}
-用户问题：{task}
-问题理解：{understanding}
+            # 构建完整 Prompt（包含 system_prompts 最高优先级）
+            prompt = build_summarize_prompt(
+                user_message=user_message,
+                understanding=understanding,
+                analysis=analysis,
+                plan=plan,
+                step_results=step_results,
+                history_context=history_context,
+                display_name=self.user_context.display_name or "用户",
+                username=self.user_context.username or "",
+                role=self.user_context.role or "店员",
+                shop_name=self.user_context.shop_name or "店铺",
+                shop_id=self.user_context.shop_id,
+            )
 
-执行结果：
-{results_text}
-
-要求：
-1. 直接回答用户问题，不要提及执行过程
-2. 如果有数据，直接给出数据和分析
-3. 如果需要预测/估算，基于已有数据进行计算
-4. 使用友好、专业的语气回答
-5. 支持 Markdown 格式"""
-            
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             return response.content
         except Exception as e:
-            # 降级：直接返回结果
-            return "\n\n".join(step_results)
+            print(f"[StreamHandler] 汇总失败: {str(e)}")
+            # 降级：直接返回成功步骤的结果
+            success_results = [r.get("result", "") for r in step_results if r.get("success") and r.get("result")]
+            return "\n\n".join(success_results) if success_results else "抱歉，处理过程中出现问题，请稍后重试。"
     
     async def _process_single(
         self, 

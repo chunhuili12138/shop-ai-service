@@ -27,6 +27,7 @@ class KnowledgeSync:
             "hours": self.base_dir / "hours",
             "refund": self.base_dir / "refund",
             "rules": self.base_dir / "rules",
+            "about": self.base_dir / "about",
             "general": self.base_dir / "general",
         }
         self._ensure_dirs()
@@ -51,6 +52,7 @@ class KnowledgeSync:
             "hours": False,
             "refund": False,
             "rules": False,
+            "about": False,
             "general": False,
             "timestamp": datetime.now().isoformat(),
         }
@@ -68,6 +70,9 @@ class KnowledgeSync:
             # 同步店铺规则 → rules目录
             results["rules"] = self.sync_rules(shop_id)
             
+            # 同步助手身份 → about目录
+            results["about"] = self.sync_about(shop_id)
+
             # 同步通用问题 → general目录
             results["general"] = self.sync_general(shop_id)
             
@@ -295,6 +300,70 @@ class KnowledgeSync:
         file_path.write_text(md_content, encoding="utf-8")
         print(f"[知识库同步] 店铺规则已同步: {file_path}")
         return True
+
+    def sync_about(self, shop_id: int) -> bool:
+        """
+        同步助手身份信息 → about目录
+        内容直接内嵌，不依赖外部文件
+        """
+        try:
+            md_content = """# 店铺智能助手介绍
+
+## 我是谁
+我是店铺智能助手，一款专为 DIY 手工店、亲子游乐等体验式门店打造的 AI 运营助手。我帮助店长和员工高效管理店铺日常运营。
+
+## 我能做什么
+
+### 1. 数据查询
+- 查询营业额、订单数、顾客数等经营数据
+- 查询库存状态、物料信息
+- 查询员工排班、绩效数据
+- 查询顾客信息、消费记录
+
+### 2. 知识问答
+- 回答关于套餐价格、类型、内容的问题
+- 回答营业时间、地址、联系方式
+- 回答退款政策、售后流程
+- 回答店铺规则、安全须知
+
+### 3. 经营分析
+- 分析经营趋势（日/周/月对比）
+- 生成经营报告
+- 提供运营改进建议
+- 分析顾客消费行为
+
+### 4. 操作执行
+- 核销入座（需确认）
+- 物料出入库（需确认）
+- 排班管理（需确认）
+- 退款审批（需确认）
+
+## 使用方式
+- 直接用自然语言提问，如"今天营业额多少？"
+- 支持多轮对话，可以追问"那昨天呢？"
+- 支持快捷问题一键提问
+- 支持省略句，我会结合上下文理解
+
+## 我的服务范围
+- 仅限当前店铺的数据和信息
+- 不涉及其他店铺或外部系统
+- 不提供医疗、法律、金融等专业建议
+
+## 我的局限
+- 我基于店铺数据库回答，实时数据可能有几分钟延迟
+- 复杂分析可能需要多步查询，请耐心等待
+- 如果我不确定，会如实告知而不是猜测
+- 高风险操作（如退款、删除）需要人工确认后才能执行
+"""
+            target_dir = self.intent_dirs["about"]
+            target_dir.mkdir(parents=True, exist_ok=True)
+            file_path = target_dir / "assistant_identity.md"
+            file_path.write_text(md_content, encoding="utf-8")
+            print(f"[知识库同步] 助手身份已同步: {file_path}")
+            return True
+        except Exception as e:
+            print(f"[知识库同步] 助手身份同步失败: {str(e)}")
+            return False
 
     def sync_general(self, shop_id: int) -> bool:
         """同步通用问题 → general目录"""
