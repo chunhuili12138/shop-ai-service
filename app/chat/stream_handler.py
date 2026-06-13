@@ -5,14 +5,11 @@
 
 import json
 import time
-import logging
 from typing import AsyncGenerator, Dict, Any
 from app.common.user_context import UserContext
 from app.multi_agent.router import get_task_router
 from app.multi_agent.supervisor import get_supervisor_agent
 from monitoring.langfuse_config import create_trace, create_span
-
-logger = logging.getLogger(__name__)
 
 
 class StreamHandler:
@@ -582,7 +579,8 @@ class StreamHandler:
                 "error": result.get("error", "")
             }
         except Exception as e:
-            print(f"[StreamHandler:Tool] 异常: {str(e)}")
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:Tool] 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     def _is_valid_result(self, result: str, action: str) -> bool:
@@ -1300,8 +1298,8 @@ class StreamHandler:
             SSE 格式的数据
         """
         # 截断过长内容用于日志显示
-        content_preview = content[:200] + "..." if len(content) > 200 else content
-        logger.info(f"[SSE] ➤ type={type}, step={step}, done={done}, content={content_preview}")
+        content_preview = str(content)[:200] + "..." if len(str(content)) > 200 else str(content)
+        print(f"[SSE] ➤ type={type}, step={step}, done={done}, content={content_preview}")
 
         data = {
             "type": type,
