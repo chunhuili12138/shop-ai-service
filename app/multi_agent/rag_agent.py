@@ -235,18 +235,29 @@ class RAGAgent:
     async def _check_need_clarification(self, question: str, shop_name: str = "") -> dict:
         """
         检查是否需要追问
-        
+
         Args:
             question: 用户问题
             shop_name: 店铺名称（有店铺则不追问店铺相关）
-        
+
         Returns:
             {"need_clarify": bool, "reason": str, "missing_info": str}
         """
         try:
+            question_stripped = question.strip()
+
+            # 规则判断：助手自身问题不需要追问
+            about_keywords = [
+                "你是谁", "你叫什么", "你的名字", "自我介绍", "介绍自己",
+                "你能做什么", "你的功能", "你的能力", "怎么用", "使用方法",
+                "你是", "关于你", "助手", "帮手",
+            ]
+            if any(kw in question_stripped for kw in about_keywords):
+                print(f"[RAGAgent] 助手自身问题，跳过追问: {question}")
+                return {"need_clarify": False, "reason": "", "missing_info": ""}
+
             # 规则判断：模糊指代（无论是否有店铺上下文都需要追问）
             vague_keywords = ["这个", "那个", "它", "重试", "上面", "之前", "刚才"]
-            question_stripped = question.strip()
             
             if any(question_stripped.startswith(kw) or question_stripped == kw for kw in vague_keywords):
                 print(f"[RAGAgent] 模糊指代问题，需要追问: {question}")
@@ -296,6 +307,8 @@ class RAGAgent:
 不需要追问的情况：
 1. 问题已经很明确（如"本月营业额"）
 2. 问题涉及店铺内部数据（有店铺上下文时）
+3. 用户在问关于助手自身的问题（如"你是谁"、"你能做什么"、"介绍一下你自己"）
+4. 用户在问通用知识问题（如"如何提高营业额"）
 
 只返回 JSON 格式：
 {{"need_clarify": true/false, "reason": "原因", "missing_info": "缺少的信息"}}"""
