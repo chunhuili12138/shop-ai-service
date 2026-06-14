@@ -125,6 +125,7 @@ class TaskPlan:
     reasoning: str = ""                    # 判断原因
     dependencies: Dict[str, List[str]] = field(default_factory=dict)  # Agent 依赖关系
     sub_tasks: List[SubTask] = field(default_factory=list)  # 子任务列表
+    from_skill: bool = False                                 # 是否来自预设 Skill
     
     def to_dict(self) -> Dict[str, Any]:
         """转换为字典"""

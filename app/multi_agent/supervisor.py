@@ -147,10 +147,16 @@ class SupervisorAgent:
             best_result = None      # 最高分数的结果
             best_score = 0          # 最高分数
             best_review = None      # 最高分数的评审
+            round_history = []      # 每轮执行的完整记录（计划 + 子任务结果）
             
             for attempt in range(max_retries):
-                # 1. 创建任务计划（传递历史上下文）
-                plan = await self.router.create_plan(full_task, has_image=bool(image_url), shop_context=history_context)
+                # 1. 创建任务计划（传递历史上下文 + 上轮执行记录）
+                plan = await self.router.create_plan(
+                    full_task,
+                    has_image=bool(image_url),
+                    shop_context=history_context,
+                    previous_rounds=round_history if attempt > 0 else None,
+                )
                 
                 # 输出任务拆分结果
                 if plan.sub_tasks:
@@ -172,6 +178,27 @@ class SupervisorAgent:
                 
                 last_result = result
                 
+                # 记录本轮执行情况到 round_history
+                round_record = {
+                    "attempt": attempt + 1,
+                    "plan": {
+                        "from_skill": plan.from_skill,
+                        "complexity": plan.complexity.value if hasattr(plan.complexity, 'value') else str(plan.complexity),
+                        "reasoning": plan.reasoning,
+                    },
+                    "sub_tasks": {},
+                }
+                for st in plan.sub_tasks:
+                    if st.result:
+                        round_record["sub_tasks"][st.id] = {
+                            "task": st.task,
+                            "agent": st.agent,
+                            "success": st.result.success,
+                            "result": st.result.result if st.result.success else "",
+                            "error": st.result.error if not st.result.success else "",
+                        }
+                round_history.append(round_record)
+                
                 # 3. 评审结果
                 if result.success and result.result:
                     await self._notify_progress("结果汇总", "正在汇总分析结果...")
@@ -191,11 +218,18 @@ class SupervisorAgent:
                         await self._notify_progress("完成", "处理完成", "success")
                         break
                     else:
-                        print(f"[Supervisor] 第 {attempt + 1} 次执行未通过评审，分数: {score}，问题: {review.get('issues')}")
-                        await self._notify_progress("评审", f"质量评分: {score}/100，正在优化...", "warning")
+                        # 评审未通过，展示原因
+                        issues = review.get("issues", [])
+                        issues_text = "；".join(issues[:2]) if issues else "质量不达标"
+                        print(f"[Supervisor] 第 {attempt + 1} 次执行未通过评审，分数: {score}，问题: {issues}")
+                        await self._notify_progress(
+                            "评审",
+                            f"质量评分: {score}/100，问题: {issues_text}，正在优化重试...（第 {attempt + 2}/{max_retries} 次）",
+                            "warning"
+                        )
                         if attempt < max_retries - 1:
-                            # 调整任务描述，提示上次的问题
-                            full_task = f"{task}\n\n注意：上次回答有以下问题，请改进：{', '.join(review.get('issues', []))}"
+                            # 将上一轮的完整执行情况作为上下文，让 LLM 自主决定如何调整
+                            full_task = self._build_retry_context(task, round_history, review)
                 else:
                     # 执行失败，不需要评审
                     print(f"[Supervisor] 第 {attempt + 1} 次执行失败: {result.error}")
@@ -298,6 +332,59 @@ class SupervisorAgent:
                 error=str(e)
             )
     
+    def _build_retry_context(self, original_task: str, round_history: list, review: dict) -> str:
+        """
+        构建重试上下文：将上一轮的完整执行链路传给下一轮 LLM
+
+        Args:
+            original_task: 用户原始任务
+            round_history: 所有轮次的执行记录
+            review: 最新一轮的评审结果
+
+        Returns:
+            包含完整上下文的重试任务描述
+        """
+        # 构建上一轮的执行摘要
+        last_round = round_history[-1]
+        plan_info = last_round.get("plan", {})
+        sub_tasks_info = last_round.get("sub_tasks", {})
+
+        # 格式化每个子任务的执行情况
+        sub_tasks_text = ""
+        for st_id, st_data in sub_tasks_info.items():
+            status = "✓ 成功" if st_data.get("success") else "✗ 失败"
+            sub_tasks_text += f"  子任务{st_id}: {st_data.get('task', '')} [{st_data.get('agent', '')}] → {status}\n"
+            if st_data.get("success") and st_data.get("result"):
+                result_preview = st_data["result"][:300]
+                sub_tasks_text += f"    数据: {result_preview}\n"
+            elif st_data.get("error"):
+                sub_tasks_text += f"    错误: {st_data['error']}\n"
+
+        issues = review.get("issues", [])
+        issues_text = "\n".join(f"  - {issue}" for issue in issues) if issues else "  无具体问题"
+
+        context = f"""【重试任务】
+{original_task}
+
+【上一轮执行情况】（第 {last_round.get('attempt', '?')} 轮）
+规划方式: {'预设 Skill' if plan_info.get('from_skill') else 'LLM 动态规划'}
+规划说明: {plan_info.get('reasoning', '无')}
+
+子任务执行结果:
+{sub_tasks_text}
+
+【评审未通过的原因】
+{issues_text}
+
+【你的任务】
+请根据以上信息，决定如何重试：
+1. 如果上一轮的某个子任务执行失败了，可以只重做失败的部分，成功的部分直接复用
+2. 如果上一轮的规划有问题，可以完全重新规划
+3. 如果上一轮的数据查询都成功了，只是分析/汇总质量差，可以只重新做分析/汇总部分
+4. 请在规划中标记哪些子任务可以复用上轮结果（在子任务描述中注明"复用上轮结果"）"""
+
+        return context
+
     async def _review_result(self, task: str, result: str) -> dict:
         """
         评审执行结果是否满足用户需求
@@ -422,35 +509,48 @@ class SupervisorAgent:
         Returns:
             执行结果
         """
-        # 并行执行所有子任务
+        # 并行执行所有子任务（已有结果的复用）
         sub_task_coroutines = []
-        for sub_task in sub_tasks:
-            sub_task_coroutines.append(
-                self._execute_single_sub_task(sub_task, context, image_url, trace)
-            )
-        
-        # 等待所有子任务完成
-        sub_task_results = await asyncio.gather(*sub_task_coroutines, return_exceptions=True)
-        
-        # 处理子任务结果
+        sub_task_indices = []  # 记录需要执行的子任务索引
         valid_results = []
-        for i, result in enumerate(sub_task_results):
-            if isinstance(result, AgentResult):
-                # 将结果关联到子任务
-                sub_tasks[i].result = result
-                valid_results.append(result)
-            elif isinstance(result, Exception):
-                print(f"[Supervisor] 子任务 {i+1} 执行异常: {str(result)}")
-                # 创建失败结果
-                error_result = AgentResult(
-                    agent=sub_tasks[i].agent,
-                    result=f"子任务执行失败: {str(result)}",
-                    confidence=0.0,
-                    success=False,
-                    error=str(result)
+        
+        for i, sub_task in enumerate(sub_tasks):
+            # 检查是否已有结果（上轮复用）
+            if sub_task.result and sub_task.result.success:
+                valid_results.append(sub_task.result)
+                await self._notify_progress(
+                    f"步骤 {sub_task.id}/{len(sub_tasks)}",
+                    f"复用上轮结果: {sub_task.description}",
+                    "success"
                 )
-                sub_tasks[i].result = error_result
-                valid_results.append(error_result)
+                print(f"[Supervisor] 复用上轮结果: 子任务 {sub_task.id}")
+            else:
+                sub_task_coroutines.append(
+                    self._execute_single_sub_task(sub_task, context, image_url, trace)
+                )
+                sub_task_indices.append(i)
+        
+        # 等待需要执行的子任务完成
+        if sub_task_coroutines:
+            sub_task_results = await asyncio.gather(*sub_task_coroutines, return_exceptions=True)
+            
+            # 处理子任务结果
+            for j, result in enumerate(sub_task_results):
+                orig_idx = sub_task_indices[j]
+                if isinstance(result, AgentResult):
+                    sub_tasks[orig_idx].result = result
+                    valid_results.append(result)
+                elif isinstance(result, Exception):
+                    print(f"[Supervisor] 子任务 {orig_idx+1} 执行异常: {str(result)}")
+                    error_result = AgentResult(
+                        agent=sub_tasks[orig_idx].agent,
+                        result=f"子任务执行失败: {str(result)}",
+                        confidence=0.0,
+                        success=False,
+                        error=str(result)
+                    )
+                    sub_tasks[orig_idx].result = error_result
+                    valid_results.append(error_result)
         
         # 记录子任务结果
         if trace:
@@ -494,6 +594,18 @@ class SupervisorAgent:
         sorted_sub_tasks = sorted(sub_tasks, key=lambda st: st.id)
         
         for sub_task in sorted_sub_tasks:
+            # 检查是否已有结果（上轮复用）
+            if sub_task.result and sub_task.result.success:
+                completed[sub_task.id] = sub_task.result
+                valid_results.append(sub_task.result)
+                await self._notify_progress(
+                    f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                    f"复用上轮结果: {sub_task.description}",
+                    "success"
+                )
+                print(f"[Supervisor] 复用上轮结果: 子任务 {sub_task.id}")
+                continue
+            
             # 检查依赖是否满足
             dependencies_met = all(dep_id in completed for dep_id in sub_task.depends_on)
             

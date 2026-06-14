@@ -972,7 +972,7 @@ class TaskRouter:
                 depends_on=[],
             )]
     
-    async def create_plan(self, task: str, has_image: bool = False, shop_context: str = "") -> TaskPlan:
+    async def create_plan(self, task: str, has_image: bool = False, shop_context: str = "", previous_rounds: list = None) -> TaskPlan:
         """
         创建任务执行计划
         
@@ -981,9 +981,10 @@ class TaskRouter:
         2. 规则判断任务类型
         
         Args:
-            task: 用户任务
+            task: 用户任务（重试时包含上轮执行上下文）
             has_image: 是否包含图像
             shop_context: 店铺上下文（包含历史对话）
+            previous_rounds: 上轮执行记录（重试时传入，用于智能跳过已完成的子任务）
         
         Returns:
             任务执行计划
@@ -1007,6 +1008,20 @@ class TaskRouter:
                     query=step.query,
                     depends_on=step.depends_on,
                 )
+                
+                # 如果有上轮执行记录，将成功的结果挂到子任务上
+                if previous_rounds:
+                    last_round = previous_rounds[-1]
+                    prev_data = last_round.get("sub_tasks", {}).get(step.step)
+                    if prev_data and prev_data.get("success") and prev_data.get("result"):
+                        sub_task.result = AgentResult(
+                            agent=step.agent,
+                            result=prev_data["result"],
+                            confidence=0.9,
+                            success=True,
+                        )
+                        print(f"[Router] 子任务 {step.step} 复用上轮结果")
+                
                 sub_tasks.append(sub_task)
             
             # 提取所有需要的 Agent 类型
@@ -1022,6 +1037,7 @@ class TaskRouter:
                 parallel=not has_dependencies,
                 reasoning=f"匹配预设 Skill: {skill.name} (置信度: {score:.2f})",
                 sub_tasks=sub_tasks,
+                from_skill=True,
             )
         
         # 2. 使用规则判断任务类型
