@@ -738,10 +738,11 @@ class SupervisorAgent:
             # 收集所有子任务的原始结果（不汇总）
             raw_results = []
             for sub_task in sub_tasks:
+                agent_name = sub_task.agent.value if hasattr(sub_task.agent, 'value') else str(sub_task.agent or "unknown")
                 if sub_task.result and sub_task.result.success and sub_task.result.result:
                     raw_results.append({
                         "action": sub_task.task,
-                        "tool": sub_task.agent.value if sub_task.agent else "unknown",
+                        "tool": agent_name,
                         "success": True,
                         "result": sub_task.result.result,
                         "error": "",
@@ -749,7 +750,7 @@ class SupervisorAgent:
                 elif sub_task.result:
                     raw_results.append({
                         "action": sub_task.task,
-                        "tool": sub_task.agent.value if sub_task.agent else "unknown",
+                        "tool": agent_name,
                         "success": False,
                         "result": "",
                         "error": sub_task.result.error or "执行失败",
