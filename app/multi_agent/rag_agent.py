@@ -232,7 +232,7 @@ class RAGAgent:
         
         return task
     
-    async def _check_need_clarification(self, question: str, shop_name: str = "") -> dict:
+    async def _check_need_clarification(self, question: str, shop_name: str = "", history_context: str = "") -> dict:
         """
         检查是否需要追问
 
@@ -293,9 +293,18 @@ class RAGAgent:
             llm = get_chat_llm(temperature=0)
             
             context_info = f"\n用户店铺：{shop_name}" if shop_name else ""
+            history_section = ""
+            if history_context:
+                history_section = f"""
+
+【历史对话】
+{history_context}
+
+注意：当用户的问题是省略句或模糊指代时，结合历史对话理解用户的真实意图。
+例如：历史中用户问过天气，当前问"海宁呢？"，说明用户想查海宁天气，不需要追问。"""
             
             prompt = f"""判断用户问题是否需要追问才能准确回答。
-{context_info}
+{context_info}{history_section}
 
 用户问题："{question}"
 
@@ -534,10 +543,10 @@ class RAGAgent:
             task = actual_task
         
         try:
-            # 0. 检查是否需要追问（使用原始问题，而非 Router 重写后的 task）
+            # 0. 检查是否需要追问（使用原始问题，传入历史上下文）
             shop_name = context.shop_name if context else ""
             original_question = kwargs.get("original_question", task)
-            clarification = await self._check_need_clarification(original_question, shop_name)
+            clarification = await self._check_need_clarification(original_question, shop_name, history_context)
             if clarification.get("need_clarify"):
                 missing_info = clarification.get("missing_info", "")
                 print(f"[RAGAgent] 需要追问，缺少信息: {missing_info}")
