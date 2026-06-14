@@ -712,44 +712,74 @@ class SupervisorAgent:
         return result
     
     async def _build_final_result(
-        self, 
-        task: str, 
-        sub_tasks: List[SubTask], 
-        valid_results: List[AgentResult], 
+        self,
+        task: str,
+        sub_tasks: List[SubTask],
+        valid_results: List[AgentResult],
         context: UserContext = None,
         trace=None
     ) -> AgentResult:
         """
-        构建最终结果
-        
+        构建最终结果（只收集原始结果，不汇总）
+
+        汇总由 stream_handler._final_summarize 统一处理（带 system_prompts）
+
         Args:
             task: 原始任务
             sub_tasks: 子任务列表
             valid_results: 有效的执行结果
-            context: 用户上下文（用于搜索）
+            context: 用户上下文
             trace: LangFuse 追踪
-        
+
         Returns:
-            最终执行结果
+            最终执行结果（原始数据）
         """
         if valid_results:
-            final_answer = await self._summarize_sub_tasks(task, sub_tasks, context)
-            
-            # 记录汇总结果
+            # 收集所有子任务的原始结果（不汇总）
+            raw_results = []
+            for sub_task in sub_tasks:
+                if sub_task.result and sub_task.result.success and sub_task.result.result:
+                    raw_results.append({
+                        "action": sub_task.task,
+                        "tool": sub_task.agent.value if sub_task.agent else "unknown",
+                        "success": True,
+                        "result": sub_task.result.result,
+                        "error": "",
+                    })
+                elif sub_task.result:
+                    raw_results.append({
+                        "action": sub_task.task,
+                        "tool": sub_task.agent.value if sub_task.agent else "unknown",
+                        "success": False,
+                        "result": "",
+                        "error": sub_task.result.error or "执行失败",
+                    })
+
+            # 拼接原始结果文本（供 _final_summarize 使用）
+            result_text = ""
+            for i, r in enumerate(raw_results):
+                status = "✓" if r["success"] else "✗"
+                result_text += f"[{status}] {r['action']}\n"
+                if r["success"] and r["result"]:
+                    result_text += f"{r['result']}\n\n"
+                elif r["error"]:
+                    result_text += f"错误: {r['error']}\n\n"
+
+            # 记录
             if trace:
-                create_span(trace, "summarize_result", {
-                    "answer_length": len(final_answer),
-                    "sub_tasks_count": len(valid_results),
-                    "success_count": sum(1 for r in valid_results if r.success),
+                create_span(trace, "collect_results", {
+                    "sub_tasks_count": len(sub_tasks),
+                    "success_count": sum(1 for r in raw_results if r["success"]),
                 })
-            
+
             return AgentResult(
                 agent=AgentType.SUPERVISOR,
-                result=final_answer,
+                result=result_text.strip(),
                 confidence=0.9,
                 metadata={
-                    "sub_tasks": [sub_task.to_dict() for sub_task in sub_tasks],
-                    "results": [r.to_dict() for r in valid_results]
+                    "raw_results": raw_results,
+                    "sub_tasks_count": len(sub_tasks),
+                    "success_count": sum(1 for r in raw_results if r["success"]),
                 }
             )
         else:
@@ -760,110 +790,6 @@ class SupervisorAgent:
                 success=False,
                 error="All sub-tasks failed"
             )
-    
-    async def _summarize_sub_tasks(self, task: str, sub_tasks: List[SubTask], context: UserContext = None) -> str:
-        """
-        汇总子任务结果（只使用成功的子任务）
-        
-        Args:
-            task: 原始任务
-            sub_tasks: 子任务列表
-            context: 用户上下文（用于搜索）
-        
-        Returns:
-            汇总后的回答
-        """
-        try:
-            from langchain_core.messages import HumanMessage
-            
-            # 只收集成功的子任务结果
-            results_text = []
-            for sub_task in sub_tasks:
-                if sub_task.result:
-                    if sub_task.result.success and sub_task.result.result:
-                        # ✅ 只传递成功的结果
-                        results_text.append(sub_task.result.result)
-                    else:
-                        # ❌ 失败的只记录日志
-                        print(f"[Supervisor] 跳过失败的子任务 {sub_task.id}: {sub_task.result.error}")
-                else:
-                    print(f"[Supervisor] 跳过未执行的子任务 {sub_task.id}")
-            
-            # 如果没有成功结果，尝试搜索互联网
-            if not results_text or (len(results_text) == 1 and "没有查询到具体数据" in results_text[0]):
-                print(f"[Supervisor] 子任务执行结果不足，尝试搜索互联网")
-                try:
-                    from app.search.tavily_client import web_search
-                    
-                    # 构建搜索查询
-                    search_query = task
-                    if context and context.shop_name:
-                        search_query = f"{context.shop_name} {task}"
-                    
-                    web_result = await web_search(
-                        query=search_query,
-                        context=context.shop_name if context else "",
-                        max_results=3,
-                    )
-                    
-                    if web_result and "搜索失败" not in web_result:
-                        results_text = [f"根据互联网搜索：\n{web_result}"]
-                except Exception as search_error:
-                    print(f"[Supervisor] 互联网搜索失败: {str(search_error)}")
-            
-            # 如果仍然没有结果，使用通用知识
-            if not results_text:
-                results_text.append("（没有查询到具体数据，请基于通用商业知识回答）")
-            
-            results_str = "\n\n".join(results_text)
-            
-            # 获取当前日期
-            from datetime import datetime
-            current_date = datetime.now().strftime("%Y年%m月%d日")
-            
-            # 使用 LLM 汇总
-            prompt = SUMMARIZE_PROMPT.format(task=task, results=results_str, current_date=current_date)
-            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
-            
-            return response.content.strip()
-        except Exception as e:
-            print(f"[Supervisor] 汇总子任务结果失败: {str(e)}")
-            return "抱歉，处理过程中出现问题，请稍后重试。"
-    
-    async def _summarize_results(self, task: str, results: List[AgentResult]) -> str:
-        """汇总多个 Agent 的结果"""
-        try:
-            from langchain_core.messages import HumanMessage
-            
-            # 格式化结果
-            results_text = []
-            for result in results:
-                agent_name = {
-                    AgentType.RAG: "知识问答",
-                    AgentType.NL2SQL: "数据查询",
-                    AgentType.TOOL: "工具调用",
-                    AgentType.VISION: "图像识别",
-                    AgentType.LLM: "分析总结",
-                }.get(result.agent, result.agent)
-                
-                results_text.append(f"【{agent_name}】\n{result.result}")
-            
-            results_str = "\n\n".join(results_text)
-            
-            # 获取当前日期
-            from datetime import datetime
-            current_date = datetime.now().strftime("%Y年%m月%d日")
-            
-            # 使用 LLM 汇总
-            prompt = SUMMARIZE_PROMPT.format(task=task, results=results_str, current_date=current_date)
-            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
-            
-            return response.content.strip()
-        except Exception as e:
-            print(f"[Supervisor] 汇总结果失败: {str(e)}")
-            # 降级：直接拼接结果
-            return "\n\n".join([r.result for r in results if r.success])
-
 
 # 全局实例
 _supervisor_agent = None

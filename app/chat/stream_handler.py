@@ -958,10 +958,27 @@ class StreamHandler:
         
         # 输出最终结果
         if final_result and final_result.success:
-            # 收集 AI 回复
-            self._ai_response_parts.append(final_result.result)
+            # 提取子任务原始结果
+            raw_results = final_result.metadata.get("raw_results", []) if final_result.metadata else []
+
+            yield self._format_sse("processing", "正在汇总分析结果...", "汇总")
+
+            # 构建历史上下文
+            history_context = self._build_history_context()
+
+            # 使用统一的 _final_summarize（带 system_prompts）
+            summary = await self._final_summarize(
+                user_message=message,
+                understanding="",
+                analysis="",
+                plan=[],
+                step_results=raw_results,
+                history_context=history_context,
+            )
+
+            self._ai_response_parts.append(summary)
             self._ai_response_data_type = "text"
-            yield self._format_sse("answer", final_result.result, "最终答案")
+            yield self._format_sse("answer", summary, "最终答案")
         else:
             friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
             self._ai_response_parts.append(friendly_msg)
