@@ -534,9 +534,10 @@ class RAGAgent:
             task = actual_task
         
         try:
-            # 0. 检查是否需要追问（传入店铺上下文）
+            # 0. 检查是否需要追问（使用原始问题，而非 Router 重写后的 task）
             shop_name = context.shop_name if context else ""
-            clarification = await self._check_need_clarification(task, shop_name)
+            original_question = kwargs.get("original_question", task)
+            clarification = await self._check_need_clarification(original_question, shop_name)
             if clarification.get("need_clarify"):
                 missing_info = clarification.get("missing_info", "")
                 print(f"[RAGAgent] 需要追问，缺少信息: {missing_info}")

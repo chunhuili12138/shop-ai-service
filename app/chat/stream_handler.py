@@ -250,7 +250,7 @@ class StreamHandler:
                 print(f"[StreamHandler] 实际执行任务: {actual_task}")
                 
                 # 单任务，按计划执行
-                async for event in self._execute_plan(actual_task, plan, understanding, analysis, history_context, trace):
+                async for event in self._execute_plan(actual_task, plan, understanding, analysis, history_context, trace, original_message=message):
                     yield event
             elif route_result.get("mode") == "multi":
                 # 多 Agent 任务
@@ -314,24 +314,26 @@ class StreamHandler:
             yield self._format_sse("answer", friendly_msg, "提示")
     
     async def _execute_plan(
-        self, 
-        message: str, 
-        plan: list, 
-        understanding: str, 
-        analysis: str, 
-        history_context: str, 
-        trace
+        self,
+        message: str,
+        plan: list,
+        understanding: str,
+        analysis: str,
+        history_context: str,
+        trace,
+        original_message: str = "",
     ) -> AsyncGenerator[str, None]:
         """
         按照 Router 的计划逐步执行任务
-        
+
         Args:
-            message: 用户原始问题
+            message: Router 理解后的任务描述
             plan: 执行计划 [{action, tool, ...}]
             understanding: 问题理解
             analysis: 问题分析
             history_context: 历史上下文
             trace: LangFuse 追踪
+            original_message: 用户原始消息（用于 RAG 追问判断）
         
         Yields:
             SSE 格式的数据
@@ -401,7 +403,7 @@ class StreamHandler:
                 step_result = await self._execute_step_nl2sql(step_context, message)
             elif tool == "rag":
                 print(f"[StreamHandler] 调用 RAG Agent...")
-                step_result = await self._execute_step_rag(step_context, message, history_context)
+                step_result = await self._execute_step_rag(step_context, message, history_context, original_question=original_message or message)
             elif tool == "llm":
                 print(f"[StreamHandler] 调用 LLM Agent...")
                 step_result = await self._execute_step_llm(step_context, message, history_context)
@@ -511,10 +513,11 @@ class StreamHandler:
             print(f"[StreamHandler:NL2SQL] 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
-    async def _execute_step_rag(self, context: str, original_task: str, history_context: str = "") -> dict:
+    async def _execute_step_rag(self, context: str, original_task: str, history_context: str = "", original_question: str = "") -> dict:
         """执行 RAG 步骤"""
         print(f"[StreamHandler:RAG] ========== 开始执行 ==========")
         print(f"[StreamHandler:RAG] 入参 original_task: {original_task}")
+        print(f"[StreamHandler:RAG] 入参 original_question: {original_question}")
         print(f"[StreamHandler:RAG] 入参 context({len(context)}字符): {context[:300]}...")
         print(f"[StreamHandler:RAG] 入参 history_context({len(history_context)}字符)")
         t0 = time.time()
@@ -526,7 +529,8 @@ class StreamHandler:
                 original_task,
                 self.user_context,
                 route_context=context,
-                history_context=history_context
+                history_context=history_context,
+                original_question=original_question or original_task,
             )
 
             duration = (time.time() - t0) * 1000
@@ -742,8 +746,8 @@ class StreamHandler:
 
             llm = get_chat_llm()
 
-            # 构建完整 Prompt（包含 system_prompts 最高优先级）
-            prompt = build_summarize_prompt(
+            # 构建完整 Prompt（system_prompts 作为 SystemMessage，最高优先级）
+            system_prompt, user_prompt = build_summarize_prompt(
                 user_message=user_message,
                 understanding=understanding,
                 analysis=analysis,
@@ -757,7 +761,10 @@ class StreamHandler:
                 shop_id=self.user_context.shop_id,
             )
 
-            response = await llm.ainvoke([HumanMessage(content=prompt)])
+            response = await llm.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ])
             return response.content
         except Exception as e:
             print(f"[StreamHandler] 汇总失败: {str(e)}")
