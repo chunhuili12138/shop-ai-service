@@ -8,6 +8,7 @@ RAG Agent - 知识问答 Agent
 """
 
 import asyncio
+import json
 from typing import Optional
 from app.common.user_context import UserContext
 from app.multi_agent.protocol import AgentResult, AgentType
@@ -154,7 +155,6 @@ class RAGAgent:
 
             response = await llm.ainvoke([HumanMessage(content=prompt)])
 
-            import json
             content = response.content.strip()
             if "```json" in content:
                 start = content.find("```json") + 7
@@ -414,14 +414,13 @@ class RAGAgent:
 {{"can_answer": true/false, "reason": "判断原因"}}"""
             
             response = await llm.ainvoke([HumanMessage(content=prompt)])
-            
-            import json
+
             content = response.content.strip()
             if "```json" in content:
                 start = content.find("```json") + 7
                 end = content.find("```", start)
                 content = content[start:end].strip()
-            
+
             result = json.loads(content)
             can_answer = result.get("can_answer", False)
             reason = result.get("reason", "")
@@ -562,7 +561,6 @@ class RAGAgent:
                 )
             
             # 判断是否需要互联网搜索（LLM 判断，替代关键词匹配）
-            original_question = kwargs.get("original_question", task)
             need_search = await self._should_search_web(original_question, task, history_context)
 
             # 1. 需要搜索互联网

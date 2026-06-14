@@ -698,7 +698,7 @@ class StreamHandler:
         if alt_tool:
             result = None
             if alt_tool == "rag":
-                result = await self._execute_step_rag(action, original_task)
+                result = await self._execute_step_rag(action, original_task, history_context)
             elif alt_tool == "llm":
                 result = await self._execute_step_llm(action, original_task, history_context)
             elif alt_tool == "nl2sql":
@@ -815,10 +815,6 @@ class StreamHandler:
         
         elif agent_type == "vision":
             async for event in self._process_vision(message, image_url, trace):
-                yield event
-        
-        elif agent_type == "llm":
-            async for event in self._process_llm(message, trace, route_info=route_info, history_context=history_context):
                 yield event
         
         else:

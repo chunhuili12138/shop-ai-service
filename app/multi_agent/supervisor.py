@@ -27,32 +27,6 @@ from app.experience.pool import get_experience_pool
 from app.utils.json_parser import safe_parse_json
 
 
-# 结果汇总提示词
-SUMMARIZE_PROMPT = """你是一个专业的店铺智能助手，负责帮助店主分析经营数据、提供运营建议。
-
-当前日期：{current_date}
-
-用户问题：{task}
-
-可用信息：
-{results}
-
-要求：
-1. **身份定位**：你是店铺智能助手，不要提及你是AI模型或使用模型名称（如MiMo、GPT等）
-2. **直接回答用户问题**，不要提及执行过程、子任务等内部概念
-3. **只使用有效的信息**，忽略错误和失败的内容
-4. **使用当前实际日期**（{current_date}），不要使用其他日期
-5. **如果信息不足，基于通用商业知识补充**，但必须：
-   - 符合中国法律法规和商业道德
-   - 明确标注"基于通用经验"或"一般建议"
-   - 不要编造具体数据或虚假案例
-6. 使用友好、专业的语气回答
-7. 支持 Markdown 格式（表格、列表等）
-8. 如果完全没有可用信息，诚实说明并给出建议
-
-回答："""
-
-
 REVIEW_PROMPT = """评审以下回答是否满足用户需求。
 
 用户问题：{task}
@@ -353,8 +327,6 @@ class SupervisorAgent:
             return {"passed": True, "score": 70, "issues": [], "suggestion": ""}
         except Exception as e:
             print(f"[Supervisor] 评审失败: {str(e)}")
-            # 评审失败时默认通过
-            return {"passed": True, "score": 70, "issues": [], "suggestion": ""}
             # 评审失败时默认通过
             return {"passed": True, "score": 70, "issues": [], "suggestion": ""}
     
