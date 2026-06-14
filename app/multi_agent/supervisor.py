@@ -281,7 +281,7 @@ class SupervisorAgent:
                     solving_process = [
                         {"step": 1, "description": "任务分析", "detail": "分析问题类型和复杂度"},
                         {"step": 2, "description": "任务拆分", "detail": "拆分为多个子任务"},
-                        {"step": 3, "description": "执行子任务", "detail": f"执行 {len(sub_tasks)} 个子任务"},
+                        {"step": 3, "description": "执行子任务", "detail": f"执行 {len(plan.sub_tasks)} 个子任务"},
                         {"step": 4, "description": "结果汇总", "detail": "汇总并生成最终答案"},
                     ]
                     
