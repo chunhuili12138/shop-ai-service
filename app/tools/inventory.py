@@ -295,6 +295,15 @@ def execute_material_outbound(shop_id: int, material_id: int, quantity: float, r
         with engine.begin() as conn:
             from sqlalchemy import text
 
+            # 二次检查库存（FOR UPDATE 锁行防并发超扣）
+            inv = conn.execute(text(
+                "SELECT quantity FROM inventory WHERE material_id = :mid AND shop_id = :sid FOR UPDATE"
+            ), {"mid": material_id, "sid": shop_id}).fetchone()
+            if not inv:
+                return "库存记录不存在"
+            if inv[0] < quantity:
+                return f"库存不足，当前: {inv[0]}，需要: {quantity}"
+
             # 更新库存
             conn.execute(text("""
                 UPDATE inventory

@@ -93,6 +93,7 @@ def query_top_packages(shop_id: int, limit: int = 5) -> str:
         JOIN packages p ON pu.package_id = p.id
         WHERE pu.shop_id = :shop_id
         AND pu.status = 1
+        AND YEAR(pu.created_at) = YEAR(NOW())
         AND MONTH(pu.created_at) = MONTH(NOW())
         GROUP BY p.id
         ORDER BY sales_count DESC

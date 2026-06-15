@@ -127,7 +127,7 @@ def query_operation_logs(
                     if detail:
                         detail_items = [f"{k}={v}" for k, v in detail.items()]
                         detail_str = f" ({', '.join(detail_items)})"
-                except:
+                except (json.JSONDecodeError, TypeError):
                     detail_str = f" ({row['detail']})"
             
             output += f"- [{row['id']}] {operator} {action_name} {target_name}[{row['target_id']}]{detail_str} - {row['created_at']}\n"

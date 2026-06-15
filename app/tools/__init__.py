@@ -37,10 +37,10 @@ from app.tools.inventory import (
 )
 from app.tools.staff import query_staff_performance, query_staff_list
 from app.tools.queue import query_active_sessions
-from app.tools.coupon import query_coupons, grant_coupon, query_coupon_usages
-from app.tools.feedback import query_feedbacks, reply_feedback
+from app.tools.coupon import query_coupons, grant_coupon, query_coupon_usages, execute_grant_coupon
+from app.tools.feedback import query_feedbacks, reply_feedback, execute_reply_feedback
 from app.tools.schedule import query_staff_schedules, query_attendance_records
-from app.tools.notification import query_notifications, send_notification
+from app.tools.notification import query_notifications, send_notification, execute_send_notification
 from app.tools.report import query_daily_snapshots, query_revenue_trend, export_report
 from app.tools.operation import query_operation_logs
 
@@ -104,6 +104,9 @@ EXECUTE_FUNCTIONS = {
     "refund_reject": execute_refund_reject,
     "game_session_checkin": execute_game_session_checkin,
     "game_session_finish": execute_game_session_finish,
+    "grant_coupon": execute_grant_coupon,
+    "reply_feedback": execute_reply_feedback,
+    "send_notification": execute_send_notification,
 }
 
 # 以下模块依赖 TOOLS / TOOL_MAP，必须在注册表定义之后再导入
