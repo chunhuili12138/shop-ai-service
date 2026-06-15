@@ -610,7 +610,7 @@ class StreamHandler:
     
     def _is_valid_result(self, result: str, action: str) -> bool:
         """
-        检查结果是否有效（不是拒绝性回答）
+        检查结果是否有效
         
         Args:
             result: 执行结果
@@ -619,21 +619,32 @@ class StreamHandler:
         Returns:
             是否有效
         """
-        if not result or len(result.strip()) < 10:
+        if not result or len(result.strip()) < 2:
             return False
         
-        # 检查是否是拒绝性回答
+        # 空结果关键词（查询成功但没有数据，这是有效结果）
+        empty_result_keywords = [
+            "查询结果为空", "没有找到", "无数据", "无记录", "为空",
+            "暂无数据", "没有相关", "未找到", "无匹配",
+        ]
+        result_lower = result.lower()
+        for keyword in empty_result_keywords:
+            if keyword in result:
+                print(f"[StreamHandler] 空结果（有效）: {keyword}")
+                return True
+        
+        # 拒绝性回答关键词
         rejection_keywords = [
-            "无法", "不能", "抱歉", "超出", "不是我能", "不支持",
-            "无法提供", "无法获取", "无法查询", "无法回答",
+            "无法提供", "无法获取", "无法查询", "无法回答", "无法为您",
+            "不是我能", "超出我的", "不支持此",
             "sorry", "cannot", "can't",
         ]
-        
-        result_lower = result.lower()
         for keyword in rejection_keywords:
             if keyword in result_lower:
                 print(f"[StreamHandler] 结果包含拒绝性关键词: {keyword}")
                 return False
+        
+        return True
         
         return True
     

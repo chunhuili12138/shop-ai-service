@@ -67,7 +67,7 @@ def execute_sql_with_retry(sql: str, params: dict = None, max_retries: int = 2) 
 def format_results_for_llm(results: list[dict]) -> str:
     """将查询结果格式化为LLM可理解的格式"""
     if not results:
-        return "查询结果为空"
+        return "查询成功，但没有符合条件的数据记录。请告诉用户：当前没有找到相关数据。"
 
     # 表头
     columns = list(results[0].keys())
@@ -80,4 +80,4 @@ def format_results_for_llm(results: list[dict]) -> str:
         row_str = " | ".join([str(v) if v is not None else "NULL" for v in row.values()])
         rows.append(row_str)
 
-    return f"{header}\n{separator}\n" + "\n".join(rows)
+    return f"查询成功，共 {len(results)} 条记录：\n{header}\n{separator}\n" + "\n".join(rows)
