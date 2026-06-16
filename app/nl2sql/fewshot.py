@@ -7,29 +7,78 @@ from langchain_core.documents import Document
 
 # 预定义的NL2SQL样例库
 FEW_SHOT_EXAMPLES = [
+    # 营业额查询
     {
         "question": "今天营业额是多少",
-        "sql": "SELECT COALESCE(SUM(paid_amount), 0) as today_revenue FROM purchases WHERE shop_id = ? AND DATE(created_at) = CURDATE() AND status = 1",
+        "sql": "SELECT COALESCE(SUM(paid_amount), 0) as today_revenue FROM purchases WHERE shop_id = :shop_id AND DATE(created_at) = CURDATE() AND status = 1 AND is_deleted = 0",
     },
+    {
+        "question": "本月营业额多少",
+        "sql": "SELECT COALESCE(SUM(paid_amount), 0) as monthly_revenue FROM purchases WHERE shop_id = :shop_id AND YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW()) AND status = 1 AND is_deleted = 0",
+    },
+    {
+        "question": "上个月营业额",
+        "sql": "SELECT COALESCE(SUM(paid_amount), 0) as last_month_revenue FROM purchases WHERE shop_id = :shop_id AND YEAR(created_at) = YEAR(DATE_SUB(NOW(), INTERVAL 1 MONTH)) AND MONTH(created_at) = MONTH(DATE_SUB(NOW(), INTERVAL 1 MONTH)) AND status = 1 AND is_deleted = 0",
+    },
+    # 顾客查询
     {
         "question": "本月新顾客数量",
-        "sql": "SELECT COUNT(DISTINCT id) as new_customers FROM customers WHERE shop_id = ? AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())",
+        "sql": "SELECT COUNT(*) as new_customers FROM customers WHERE shop_id = :shop_id AND YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW()) AND is_deleted = 0",
     },
+    {
+        "question": "查一下顾客小灰灰的信息",
+        "sql": "SELECT id, nickname, phone, gender, created_at FROM customers WHERE shop_id = :shop_id AND nickname LIKE '%小灰灰%' AND is_deleted = 0",
+    },
+    # 退款查询
+    {
+        "question": "有没有待审核的退款",
+        "sql": "SELECT rr.id, c.nickname, rr.refund_amount, rr.reason, rr.created_at FROM refund_records rr JOIN purchases pu ON rr.purchase_id = pu.id LEFT JOIN customers c ON pu.customer_id = c.id WHERE pu.shop_id = :shop_id AND rr.status = 1 AND rr.is_deleted = 0",
+    },
+    {
+        "question": "已拒绝的退款记录",
+        "sql": "SELECT rr.id, c.nickname, rr.refund_amount, rr.reason, rr.created_at FROM refund_records rr JOIN purchases pu ON rr.purchase_id = pu.id LEFT JOIN customers c ON pu.customer_id = c.id WHERE pu.shop_id = :shop_id AND rr.status = 3 AND rr.is_deleted = 0",
+    },
+    # 套餐查询
     {
         "question": "各套餐销量排名",
-        "sql": "SELECT p.name, COUNT(*) as sales_count FROM purchases pu JOIN packages p ON pu.package_id = p.id WHERE pu.shop_id = ? AND pu.status = 1 GROUP BY p.id ORDER BY sales_count DESC LIMIT 10",
+        "sql": "SELECT p.name, COUNT(*) as sales_count FROM purchases pu JOIN packages p ON pu.package_id = p.id WHERE pu.shop_id = :shop_id AND pu.status = 1 AND pu.is_deleted = 0 GROUP BY p.id ORDER BY sales_count DESC LIMIT 10",
     },
+    {
+        "question": "店里有哪些套餐",
+        "sql": "SELECT id, name, type, price, duration_minutes FROM packages WHERE shop_id = :shop_id AND is_deleted = 0 AND is_active = 1",
+    },
+    # 库存查询
     {
         "question": "库存不足的物料",
-        "sql": "SELECT m.name, i.quantity, m.min_stock FROM inventory i JOIN materials m ON i.material_id = m.id WHERE i.shop_id = ? AND i.quantity <= m.min_stock",
+        "sql": "SELECT m.name, i.quantity, m.min_stock FROM inventory i JOIN materials m ON i.material_id = m.id WHERE i.shop_id = :shop_id AND i.quantity <= m.min_stock AND m.is_deleted = 0",
     },
     {
-        "question": "本月收入支出统计",
-        "sql": "SELECT '收入' as type, COALESCE(SUM(amount), 0) as total FROM revenue_records WHERE shop_id = ? AND MONTH(created_at) = MONTH(NOW()) UNION ALL SELECT '支出' as type, COALESCE(SUM(amount), 0) as total FROM expenses WHERE shop_id = ? AND MONTH(created_at) = MONTH(NOW())",
+        "question": "拼豆124色还有多少库存",
+        "sql": "SELECT m.name, i.quantity, m.unit FROM inventory i JOIN materials m ON i.material_id = m.id WHERE i.shop_id = :shop_id AND m.name LIKE '%124色%' AND m.is_deleted = 0",
     },
+    # 员工查询
     {
         "question": "各员工核销数量",
-        "sql": "SELECT s.name, COUNT(*) as checkin_count FROM game_sessions gs JOIN staff s ON gs.staff_id = s.id WHERE gs.shop_id = ? AND gs.status = 2 AND MONTH(gs.end_time) = MONTH(NOW()) GROUP BY s.id ORDER BY checkin_count DESC",
+        "sql": "SELECT s.name, COUNT(*) as checkin_count FROM game_sessions gs JOIN staff s ON gs.staff_id = s.id WHERE gs.shop_id = :shop_id AND gs.status = 2 AND MONTH(gs.end_time) = MONTH(NOW()) AND YEAR(gs.end_time) = YEAR(NOW()) GROUP BY s.id ORDER BY checkin_count DESC",
+    },
+    {
+        "question": "店里有几个员工",
+        "sql": "SELECT COUNT(*) as staff_count FROM staff s JOIN staff_shops ss ON s.id = ss.staff_id WHERE ss.shop_id = :shop_id AND s.is_deleted = 0",
+    },
+    # 排班查询
+    {
+        "question": "今天的排班情况",
+        "sql": "SELECT s.name, ss.start_time, ss.end_time FROM staff_schedules ss JOIN staff s ON ss.staff_id = s.id WHERE ss.shop_id = :shop_id AND ss.schedule_date = CURDATE()",
+    },
+    # 优惠券查询
+    {
+        "question": "现在有哪些优惠券",
+        "sql": "SELECT id, name, type, value, remain_stock, total_stock FROM coupons WHERE shop_id = :shop_id AND is_active = 1",
+    },
+    # 收支统计
+    {
+        "question": "本月收入支出统计",
+        "sql": "SELECT '收入' as type, COALESCE(SUM(paid_amount), 0) as total FROM purchases WHERE shop_id = :shop_id AND status = 1 AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW()) UNION ALL SELECT '支出', COALESCE(SUM(amount), 0) FROM expenses WHERE shop_id = :shop_id AND MONTH(expense_date) = MONTH(NOW()) AND YEAR(expense_date) = YEAR(NOW())",
     },
 ]
 

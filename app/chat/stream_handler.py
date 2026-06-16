@@ -1352,6 +1352,21 @@ Router 分析: {analysis}
                         except ValueError:
                             pass  # 保持原字符串
 
+            # 根据 schema 类型做转换
+            for key, val in params.items():
+                if val is None:
+                    continue
+                expected_type = properties.get(key, {}).get("type")
+                if expected_type == "integer" and isinstance(val, str) and val.isdigit():
+                    params[key] = int(val)
+                elif expected_type == "number" and isinstance(val, str):
+                    try:
+                        params[key] = float(val)
+                    except ValueError:
+                        pass
+                elif expected_type == "string" and isinstance(val, (int, float)):
+                    params[key] = str(val)
+
             # shop_id 强制覆盖（不可被 LLM 修改）
             params["shop_id"] = self.user_context.shop_id
 
