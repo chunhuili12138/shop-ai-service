@@ -53,6 +53,17 @@ MySQL 8.0
 2. 所有列必须带表别名
 3. 子查询必须有别名
 4. WHERE 条件中使用 p.shop_id = :shop_id
+5. **日期过滤必须使用 NOW() 函数，禁止硬编码年份**
+   - "本月" → YEAR(列) = YEAR(NOW()) AND MONTH(列) = MONTH(NOW())
+   - "上个月" → YEAR(列) = YEAR(DATE_SUB(NOW(), INTERVAL 1 MONTH)) AND MONTH(列) = MONTH(DATE_SUB(NOW(), INTERVAL 1 MONTH))
+   - "今天" → DATE(列) = CURDATE()
+   - "昨天" → DATE(列) = DATE_SUB(CURDATE(), INTERVAL 1 DAY)
+   - "本周" → YEARWEEK(列) = YEARWEEK(NOW())
+   - 禁止写 YEAR(列) = 2025 或 MONTH(列) = 6 这种硬编码值
+6. **退款相关查询必须使用 refund_records 表**，不要使用 wallet_transactions 或其他表
+   - 退款状态：1=处理中/待审核, 2=已完成, 3=已拒绝
+   - "待审核退款" → WHERE rr.status = 1
+   - "已拒绝退款" → WHERE rr.status = 3
 
 请直接返回 SQL 语句："""
 
@@ -428,40 +439,74 @@ class NL2SQLAgent:
         """
         从候选 SQL 中选择最佳的
         
-        Args:
-            candidates: 候选 SQL 列表
-            task: 用户问题
-            shop_id: 店铺 ID
-        
-        Returns:
-            最佳 SQL
+        选择策略：
+        1. 优先选择与问题语义相关的 SQL（检查表名是否匹配问题关键词）
+        2. 其次选择有结果的 SQL
+        3. 都没有结果时返回最后一个（而非第一个，因为最后一个通常是兜底）
         """
         if not candidates:
             return ""
         
         if len(candidates) == 1:
-            return candidates[0]
+            return add_shop_filter(candidates[0], shop_id)
         
-        # 尝试执行每个候选 SQL，选择执行成功的
+        # 问题关键词 → 期望的表名映射
+        table_hints = {
+            "退款": ["refund_records", "rr"],
+            "充值": ["wallet_transactions", "wt"],
+            "钱包": ["wallet_transactions", "customer_wallets"],
+            "积分": ["points_records"],
+            "优惠券": ["coupons", "coupon_usages"],
+            "评价": ["feedbacks"],
+            "排队": ["queue_entries"],
+            "库存": ["inventory", "materials"],
+            "采购": ["purchase_orders"],
+            "员工": ["staff"],
+            "考勤": ["attendance_records"],
+            "排班": ["staff_schedules"],
+        }
+        
+        # 确定问题期望的表
+        expected_tables = set()
+        for keyword, tables in table_hints.items():
+            if keyword in task:
+                expected_tables.update(tables)
+        
+        best_with_match = None  # 表匹配且有结果
+        best_with_result = None  # 有结果但表不匹配
+        last_valid = candidates[-1]  # 最后一个有效候选
+        
         for sql in candidates:
             try:
-                # 添加店铺过滤和限制
                 filtered_sql = add_shop_filter(sql, shop_id)
                 filtered_sql = add_limit(filtered_sql)
                 
-                # 尝试执行
                 results = await asyncio.to_thread(execute_sql_with_retry, filtered_sql)
                 
-                # 如果执行成功且有结果，返回
                 if results and len(results) > 0:
-                    print(f"[NL2SQLAgent] 选择候选 SQL(有结果)")
-                    return filtered_sql
+                    # 检查 SQL 是否包含期望的表
+                    sql_upper = sql.upper()
+                    table_matched = any(t.upper() in sql_upper for t in expected_tables) if expected_tables else True
+                    
+                    if table_matched and best_with_match is None:
+                        print(f"[NL2SQLAgent] 选择候选 SQL（表匹配+有结果）")
+                        best_with_match = filtered_sql
+                        break  # 表匹配且有结果，直接选这个
+                    elif best_with_result is None:
+                        best_with_result = filtered_sql
             except Exception as e:
                 print(f"[NL2SQLAgent] 候选 SQL 执行失败: {str(e)}")
                 continue
         
-        # 如果都失败，返回第一个
-        return add_shop_filter(candidates[0], shop_id)
+        # 优先级：表匹配+有结果 > 有结果 > 最后一个候选
+        if best_with_match:
+            return best_with_match
+        if best_with_result:
+            print(f"[NL2SQLAgent] 选择候选 SQL（有结果但表不完全匹配）")
+            return best_with_result
+        
+        print(f"[NL2SQLAgent] 所有候选无结果，返回最后一个")
+        return add_shop_filter(last_valid, shop_id)
     
     async def _validate_sql_syntax(self, sql: str) -> tuple:
         """

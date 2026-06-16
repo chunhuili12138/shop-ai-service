@@ -7,7 +7,7 @@ import json
 import hashlib
 from typing import Dict, Any, Optional, List
 from app.llm import get_chat_llm
-from app.multi_agent.protocol import TaskPlan, TaskComplexity, AgentType, SubTask
+from app.multi_agent.protocol import TaskPlan, TaskComplexity, AgentType, SubTask, AgentResult
 from app.utils.json_parser import safe_parse_json
 from app.skills.manager import get_skill_manager
 

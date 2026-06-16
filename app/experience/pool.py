@@ -189,9 +189,16 @@ class ExperiencePool:
                 filter=filter_dict
             )
             
-            # 转换为 Experience 对象
+            # 转换为 Experience 对象（过滤低相似度结果）
             experiences = []
-            for doc, score in results[:k]:
+            # Chroma 的 score 是距离，越小越相似。0.4 以下为高相关，0.4-0.6 为中等相关
+            SIMILARITY_THRESHOLD = 0.45
+            for doc, score in results[:k * 2]:
+                if score > SIMILARITY_THRESHOLD:
+                    print(f"[ExperiencePool] 过滤低相似度结果: score={score:.3f}, question={doc.page_content[:50]}")
+                    continue
+                if len(experiences) >= k:
+                    break
                 exp_data = doc.metadata.copy()
                 exp_data["question"] = doc.page_content
                 exp_data["solution"] = doc.metadata.get("solution", "")
