@@ -1243,79 +1243,211 @@ class StreamHandler:
             return {"success": False, "result": "", "error": str(e)}
 
     
-
-    async def _execute_tool_direct(self, tool_name: str, message: str, route_context: dict = None) -> dict:
-
+    async def _extract_params_with_llm(self, tool_name: str, message: str, route_context: dict, history_text: str) -> dict:
         """
-
-        直接调用 TOOL_MAP 中的工具（不经过 AgentLoop）
-
-        
+        用 LLM 从对话上下文中提取工具参数（替代正则匹配）
 
         Args:
-
-            tool_name: 工具名称（如 query_refunds, refund_approve）
-
-            message: 用户消息
-
+            tool_name: 工具名称
+            message: 用户原始消息
             route_context: 路由上下文
-
-        
+            history_text: 历史对话文本
 
         Returns:
-
-            {"success": bool, "result": str, "error": str}
-
+            提取的参数字典
         """
-
-        t0 = time.time()
-
         try:
-
             from app.tools import TOOL_MAP
+            from app.llm import get_chat_llm
+            from langchain_core.messages import HumanMessage
 
             tool = TOOL_MAP.get(tool_name)
+            if not tool or not hasattr(tool, 'args_schema') or not tool.args_schema:
+                return {"shop_id": self.user_context.shop_id}
 
+            # 获取 Pydantic schema
+            schema = tool.args_schema
+            schema_json = schema.model_json_schema()
+            properties = schema_json.get("properties", {})
+            required = schema_json.get("required", [])
+
+            # 构建参数说明
+            param_desc = []
+            for name, info in properties.items():
+                desc = info.get("description", name)
+                typ = info.get("type", "string")
+                is_required = "必填" if name in required else "可选"
+                param_desc.append(f"- {name}: {typ} ({is_required}) {desc}")
+
+            understanding = (route_context or {}).get("understanding", "")
+            analysis = (route_context or {}).get("analysis", "")
+
+            prompt = f"""根据对话上下文，提取调用工具所需的参数。
+
+工具名称: {tool_name}
+工具参数:
+{chr(10).join(param_desc)}
+
+【对话上下文】
+{history_text}
+
+【Router 理解】
+{understanding}
+
+【用户原始消息】
+{message}
+
+请提取参数，返回 JSON 格式。如果某个参数无法从上下文中确定，使用空字符串""或数字0。
+只返回 JSON，不要其他内容。"""
+
+            llm = get_chat_llm(temperature=0)
+            response = await llm.ainvoke([HumanMessage(content=prompt)])
+
+            content = response.content.strip()
+            # 提取 JSON
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                content = content[start:end].strip()
+            elif "```" in content:
+                start = content.find("```") + 3
+                end = content.find("```", start)
+                content = content[start:end].strip()
+
+            import json
+            params = json.loads(content)
+            params["shop_id"] = self.user_context.shop_id  # 确保 shop_id 正确
+
+            print(f"[StreamHandler:LLMExtract] {tool_name} 提取参数: {params}")
+            return params
+
+        except Exception as e:
+            print(f"[StreamHandler:LLMExtract] LLM 提取参数失败: {str(e)}")
+            return {"shop_id": self.user_context.shop_id}
+
+    async def _verify_and_fill_params(self, tool_name: str, params: dict) -> dict:
+        """
+        验证 LLM 提取的参数，从 DB 补充缺失信息
+
+        Args:
+            tool_name: 工具名称
+            params: LLM 提取的参数
+
+        Returns:
+            验证后的参数（含 _verified, _customer_name 等内部字段）
+        """
+        from app.nl2sql.executor import execute_sql
+
+        if tool_name in ("refund_approve", "refund_reject"):
+            refund_id = params.get("refund_id")
+            if refund_id and refund_id != 0:
+                # 验证 refund_id 是否存在且待处理
+                result = execute_sql(
+                    "SELECT rr.id, rr.status, c.nickname FROM refund_records rr "
+                    "JOIN purchases pu ON rr.purchase_id = pu.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE rr.id = :id AND pu.shop_id = :sid AND rr.is_deleted = 0",
+                    {"id": refund_id, "sid": params.get("shop_id")}
+                )
+                if result:
+                    refund = result[0]
+                    params["_verified"] = True
+                    params["_customer_name"] = refund.get("nickname", "")
+                    params["_refund_status"] = refund.get("status")
+                    if refund.get("status") != 1:
+                        params["_verified"] = False
+                        params["_error"] = f"退款状态不是待审核（当前状态: {refund.get('status')}）"
+                else:
+                    params["_verified"] = False
+                    params["_error"] = f"退款记录 {refund_id} 不存在"
+            else:
+                # refund_id 为空，查询待处理退款
+                results = execute_sql(
+                    "SELECT rr.id, rr.refund_amount, c.nickname, rr.reason "
+                    "FROM refund_records rr "
+                    "JOIN purchases pu ON rr.purchase_id = pu.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE pu.shop_id = :sid AND rr.status = 1 AND rr.is_deleted = 0",
+                    {"sid": params.get("shop_id")}
+                )
+                if not results:
+                    params["_verified"] = False
+                    params["_error"] = "没有待处理的退款申请"
+                elif len(results) == 1:
+                    params["refund_id"] = results[0]["id"]
+                    params["_verified"] = True
+                    params["_customer_name"] = results[0].get("nickname", "")
+                else:
+                    # 多条待处理退款，需要用户选择
+                    params["_verified"] = False
+                    params["_pending_refunds"] = results
+                    params["_error"] = f"有 {len(results)} 条待处理退款，请选择"
+        else:
+            # 其他工具默认验证通过
+            params["_verified"] = True
+
+        return params
+
+    async def _execute_tool_direct(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+        """
+        直接调用 TOOL_MAP 中的工具（不经过 AgentLoop）
+
+        流程：LLM 提取参数 → DB 验证补充 → 调用工具
+
+        Args:
+            tool_name: 工具名称（如 query_refunds, refund_approve）
+            message: 用户消息
+            route_context: 路由上下文
+
+        Returns:
+            {"success": bool, "result": str, "error": str}
+        """
+        t0 = time.time()
+        try:
+            from app.tools import TOOL_MAP
+            tool = TOOL_MAP.get(tool_name)
             if not tool:
-
                 return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
 
-            
+            # Step 1: LLM 从上下文提取参数
+            history_text = self._get_history_text()
+            params = await self._extract_params_with_llm(tool_name, message, route_context, history_text)
 
-            tool_args = self._build_tool_args(tool_name, message, route_context)
+            # Step 2: DB 验证和补充
+            params = await self._verify_and_fill_params(tool_name, params)
+
+            # Step 3: 检查验证结果
+            if not params.get("_verified"):
+                error = params.get("_error", "参数验证失败")
+                pending = params.get("_pending_refunds")
+                if pending:
+                    # 多条待处理退款，发送列表让用户选择
+                    return {"success": False, "result": "", "error": error, "pending_refunds": pending}
+                return {"success": False, "result": "", "error": error}
+
+            # Step 4: 清理内部字段，调用工具
+            tool_args = {k: v for k, v in params.items() if not k.startswith("_")}
             print(f"[StreamHandler:ToolDirect] 调用 {tool_name}，参数: {tool_args}")
-
-            # 校验必填参数
-            if hasattr(tool, 'args_schema') and tool.args_schema:
-                try:
-                    tool.args_schema(**tool_args)
-                except Exception as ve:
-                    missing = []
-                    if hasattr(ve, 'errors'):
-                        for err in ve.errors():
-                            if err.get('type') == 'missing':
-                                missing.extend(err.get('loc', []))
-                    if missing:
-                        print(f"[StreamHandler:ToolDirect] {tool_name} 缺失参数: {missing}，fallback 到 AgentLoop")
-                        return {"success": False, "result": "", "error": f"缺少参数: {', '.join(missing)}", "fallback": True}
 
             answer = await asyncio.to_thread(tool.invoke, tool_args)
 
-            
-
             duration = (time.time() - t0) * 1000
-
             print(f"[StreamHandler:ToolDirect] {tool_name} 执行耗时: {duration:.0f}ms")
-
             print(f"[StreamHandler:ToolDirect] {tool_name} 返回: {str(answer)}")
 
-            
-
             # 确认框类型直接返回
-
             if isinstance(answer, dict) and answer.get("type") == "confirm":
+                return {"success": True, "result": str(answer), "confirm_data": answer, "error": ""}
 
-                return {"success": True, "result": str(answer), "error": ""}
+            # 错误类型
+            if isinstance(answer, dict) and answer.get("type") == "error":
+                return {"success": False, "result": "", "error": answer.get("message", "操作失败")}
+
+            return {"success": True, "result": str(answer), "error": ""}
+        except Exception as e:
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:ToolDirect] {tool_name} 异常({duration:.0f}ms): {str(e)}")
+            return {"success": False, "result": "", "error": str(e)}
 
             
 

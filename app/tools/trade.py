@@ -198,15 +198,26 @@ def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -
         status_names = {2: "已完成", 3: "已拒绝"}
         return {"type": "error", "message": f"该退款已{status_names.get(info['status'], '处理完毕')}"}
     return {
-        "type": "confirm", "title": "确认批准退款",
+        "type": "confirm",
+        "tool_name": "refund_approve",
+        "title": "确认批准退款",
         "message": f"确定要批准 {info['customer_name']} 的退款申请吗？",
         "details": {
-            "顾客": info["customer_name"], "套餐": info["package_name"],
-            "退款金额": f"¥{info['refund_amount']:.2f}", "扣除金额": f"¥{info['deducted_amount']:.2f}",
-            "退款原因": info["reason"] or "无", "备注": remark or "无"
+            "顾客": info["customer_name"],
+            "套餐": info["package_name"],
+            "退款金额": f"¥{info['refund_amount']:.2f}",
+            "扣除金额": f"¥{info['deducted_amount']:.2f}",
+            "退款原因": info["reason"] or "无",
         },
+        "fields": [
+            {"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""}
+        ],
+        "buttons": [
+            {"type": "confirm", "label": "确认批准"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "refund_approve",
-        "params": {"shop_id": shop_id, "refund_id": refund_id, "remark": remark}
+        "params": {"shop_id": shop_id, "refund_id": refund_id}
     }
 
 
@@ -230,15 +241,25 @@ def refund_reject(shop_id: int, refund_id: int, reason: str) -> dict:
         status_names = {2: "已完成", 3: "已拒绝"}
         return {"type": "error", "message": f"该退款已{status_names.get(info['status'], '处理完毕')}"}
     return {
-        "type": "confirm", "title": "确认拒绝退款",
+        "type": "confirm",
+        "tool_name": "refund_reject",
+        "title": "确认拒绝退款",
         "message": f"确定要拒绝 {info['customer_name']} 的退款申请吗？",
         "details": {
-            "顾客": info["customer_name"], "套餐": info["package_name"],
+            "顾客": info["customer_name"],
+            "套餐": info["package_name"],
             "退款金额": f"¥{info['refund_amount']:.2f}",
-            "原退款原因": info["reason"] or "无", "拒绝原因": reason
+            "原退款原因": info["reason"] or "无",
         },
+        "fields": [
+            {"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝原因", "value": reason or ""}
+        ],
+        "buttons": [
+            {"type": "confirm", "label": "确认拒绝"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "refund_reject",
-        "params": {"shop_id": shop_id, "refund_id": refund_id, "reason": reason}
+        "params": {"shop_id": shop_id, "refund_id": refund_id}
     }
 
 
