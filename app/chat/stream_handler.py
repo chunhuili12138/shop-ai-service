@@ -417,9 +417,16 @@ class StreamHandler:
                     print(f"[StreamHandler] 直接调用工具: {tool}")
                     step_result = await self._execute_tool_direct(tool, message, route_context)
                 else:
-                    # 不 fallback 到 LLM，直接报错（防止 LLM 编造假数据）
-                    print(f"[StreamHandler] 不支持的工具类型: {tool}，跳过此步骤")
-                    step_result = {"success": False, "result": "", "error": f"不支持的工具类型: {tool}"}
+                    # 未知 tool 类型：打回 Router 重新生成
+                    print(f"[StreamHandler] 未知工具类型: {tool}，打回重新生成")
+                    valid_tools = ", ".join(sorted(TOOL_MAP.keys()))
+                    retry_context = (
+                        f"{step_context}\n\n"
+                        f"【重要纠错】你上一次选择了无效的工具 '{tool}'，这个工具不存在。"
+                        f"你必须从以下有效工具中选择一个：{valid_tools}。"
+                        f"禁止使用其他名称，禁止使用描述性名称。"
+                    )
+                    step_result = await self._execute_step_tool(retry_context, message)
 
             step_duration = (time.time() - step_start) * 1000
             print(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
