@@ -374,9 +374,9 @@ def execute_refund_reject(shop_id: int, refund_id: int, reason: str, operator_id
 
             purchase_id = check[2]
 
-            # 2. 更新退款记录: status=3(已拒绝), remark=reason
+            # 2. 更新退款记录: status=3(已拒绝), reason=拒绝原因
             conn.execute(text(
-                "UPDATE refund_records SET status = 3, remark = :reason, updated_at = NOW() WHERE id = :rid AND shop_id = :sid"
+                "UPDATE refund_records SET status = 3, reason = :reason, updated_at = NOW() WHERE id = :rid AND shop_id = :sid"
             ), {"rid": refund_id, "sid": shop_id, "reason": reason})
 
             # 3. 恢复购买记录: status=1(有效)
