@@ -56,9 +56,10 @@ def query_daily_snapshots(shop_id: int, start_date: Optional[str] = None, end_da
         SELECT
             snapshot_date,
             sales_total,
-            orders_count,
+            revenue_confirmed,
             new_customers,
-            checkins_count,
+            active_sessions,
+            average_duration,
             inventory_warns
         FROM daily_snapshots
         WHERE shop_id = :shop_id
@@ -90,14 +91,15 @@ def query_daily_snapshots(shop_id: int, start_date: Optional[str] = None, end_da
         for row in results:
             date = row["snapshot_date"]
             sales = row.get("sales_total", 0) or 0
-            orders = row.get("orders_count", 0) or 0
+            revenue = row.get("revenue_confirmed", 0) or 0
             new_customers = row.get("new_customers", 0) or 0
-            checkins = row.get("checkins_count", 0) or 0
-            warns = row.get("inventory_warns", 0) or 0
+            active = row.get("active_sessions", 0) or 0
+            avg_duration = row.get("average_duration", 0) or 0
+            warns = row.get("inventory_warns")
 
-            output += f"- {date}: 营业额 ¥{sales:.2f} | 订单 {orders} 单 | 新客 {new_customers} 人 | 核销 {checkins} 次"
-            if warns > 0:
-                output += f" | 库存预警 {warns} 项"
+            output += f"- {date}: 营业额 ¥{sales:.2f} | 已确认 ¥{revenue:.2f} | 新客 {new_customers} 人 | 活跃场次 {active} | 平均时长 {avg_duration}分钟"
+            if warns:
+                output += f" | 库存预警 {warns}"
             output += "\n"
 
         return output

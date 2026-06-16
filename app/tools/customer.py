@@ -32,7 +32,7 @@ def query_customer(shop_id: int, keyword: str) -> str:
             gender,
             created_at
         FROM customers
-        WHERE shop_id = :shop_id
+        WHERE shop_id = :shop_id AND (is_deleted = 0 OR is_deleted IS NULL)
         AND (nickname LIKE :keyword OR phone LIKE :keyword)
         LIMIT 10
     """

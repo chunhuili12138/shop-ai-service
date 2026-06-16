@@ -102,8 +102,7 @@ def query_attendance_records(shop_id: int, staff_id: Optional[int] = None, date:
             ar.date,
             ar.check_in_time,
             ar.check_out_time,
-            ar.status,
-            ar.remark
+            ar.status
         FROM attendance_records ar
         JOIN staff s ON ar.staff_id = s.id
         WHERE ar.shop_id = :shop_id
@@ -140,10 +139,8 @@ def query_attendance_records(shop_id: int, staff_id: Optional[int] = None, date:
             check_in = row.get("check_in_time", "未打卡")
             check_out = row.get("check_out_time", "未打卡")
             status = status_names.get(row["status"], "未知")
-            remark = row.get("remark", "")
-            remark_str = f" ({remark})" if remark else ""
 
-            output += f"- {staff} [{date_str}]: {check_in} ~ {check_out} [{status}]{remark_str}\n"
+            output += f"- {staff} [{date_str}]: {check_in} ~ {check_out} [{status}]\n"
 
         return output
     except Exception as e:

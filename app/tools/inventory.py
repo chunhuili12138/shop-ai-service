@@ -58,10 +58,11 @@ def query_inventory(shop_id: int, keyword: Optional[str] = None) -> str:
             CASE WHEN i.quantity <= m.min_stock THEN '库存不足' ELSE '正常' END as status
         FROM inventory i
         JOIN materials m ON i.material_id = m.id
-        WHERE i.shop_id = :shop_id
+        WHERE i.shop_id = :shop_id AND (m.is_deleted = 0 OR m.is_deleted IS NULL)
     """
 
     params = {"shop_id": shop_id}
+
     if keyword:
         sql += " AND m.name LIKE :keyword"
         params["keyword"] = f"%{keyword}%"
@@ -99,6 +100,7 @@ def query_low_stock(shop_id: int) -> str:
         JOIN materials m ON i.material_id = m.id
         WHERE i.shop_id = :shop_id
         AND i.quantity <= m.min_stock
+        AND (m.is_deleted = 0 OR m.is_deleted IS NULL)
         ORDER BY (i.quantity / m.min_stock) ASC
     """
 

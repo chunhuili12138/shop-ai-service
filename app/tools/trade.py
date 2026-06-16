@@ -108,7 +108,7 @@ def query_game_sessions(shop_id: int, customer_id: Optional[int] = None, status:
         LEFT JOIN packages p ON pu.package_id = p.id
         LEFT JOIN customers c ON pu.customer_id = c.id
         LEFT JOIN staff s ON gs.staff_id = s.id
-        WHERE gs.shop_id = :shop_id
+        WHERE gs.shop_id = :shop_id AND (gs.is_deleted = 0 OR gs.is_deleted IS NULL)
     """
     params = {"shop_id": shop_id, "limit": limit}
     if customer_id:

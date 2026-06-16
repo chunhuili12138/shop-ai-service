@@ -33,11 +33,8 @@ def query_feedbacks(shop_id: int, status: Optional[str] = None, limit: int = 10)
         SELECT f.id, c.nickname as customer_name, f.feedback_type,
                f.rating, f.content, f.reply_content, f.status, f.created_at
         FROM feedbacks f
-        LEFT JOIN game_sessions gs ON f.game_session_id = gs.id
-        LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id
-        LEFT JOIN purchases pu ON cs.purchase_id = pu.id
-        LEFT JOIN customers c ON pu.customer_id = c.id
-        WHERE f.shop_id = :shop_id
+        LEFT JOIN customers c ON f.customer_id = c.id
+        WHERE f.shop_id = :shop_id AND (f.is_deleted = 0 OR f.is_deleted IS NULL)
     """
     params = {"shop_id": shop_id, "limit": limit}
     if status:
@@ -114,15 +111,15 @@ def execute_reply_feedback(shop_id: int, feedback_id: int, reply_content: str, o
         with engine.begin() as conn:
             from sqlalchemy import text
             check = conn.execute(text(
-                "SELECT id, status FROM feedbacks WHERE id = :fid AND shop_id = :sid FOR UPDATE"
+                "SELECT id, status FROM feedbacks WHERE id = :fid AND shop_id = :sid AND (is_deleted = 0 OR is_deleted IS NULL) FOR UPDATE"
             ), {"fid": feedback_id, "sid": shop_id}).fetchone()
             if not check:
                 return "评价不存在"
             if check[1] == 2:
                 return "该评价已回复"
             conn.execute(text(
-                "UPDATE feedbacks SET reply_content = :reply, status = 2, updated_at = NOW() WHERE id = :fid AND shop_id = :sid"
-            ), {"reply": reply_content, "fid": feedback_id, "sid": shop_id})
+                "UPDATE feedbacks SET reply_content = :reply, status = 2, replied_by = :oid, replied_at = NOW(), updated_at = NOW() WHERE id = :fid AND shop_id = :sid"
+            ), {"reply": reply_content, "fid": feedback_id, "sid": shop_id, "oid": operator_id})
         return f"回复成功"
     except Exception as e:
         return f"回复失败: {str(e)}"

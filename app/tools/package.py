@@ -44,7 +44,7 @@ def query_packages(shop_id: int, package_type: Optional[str] = None) -> str:
             max_people_per_session,
             is_active
         FROM packages
-        WHERE shop_id = :shop_id
+        WHERE shop_id = :shop_id AND (is_deleted = 0 OR is_deleted IS NULL)
     """
 
     params = {"shop_id": shop_id}
