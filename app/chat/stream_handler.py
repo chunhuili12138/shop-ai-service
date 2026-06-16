@@ -487,7 +487,7 @@ class StreamHandler:
         """执行 NL2SQL 步骤"""
         print(f"[StreamHandler:NL2SQL] ========== 开始执行 ==========")
         print(f"[StreamHandler:NL2SQL] 入参 original_task: {original_task}")
-        print(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context[:300]}...")
+        print(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context}")
         t0 = time.time()
         try:
             from app.multi_agent.nl2sql_agent import NL2SQLAgent
@@ -499,7 +499,7 @@ class StreamHandler:
             print(f"[StreamHandler:NL2SQL] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:NL2SQL] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
             if result.success:
-                print(f"[StreamHandler:NL2SQL] 输出内容: {result.result[:300]}...")
+                print(f"[StreamHandler:NL2SQL] 输出内容: {result.result}")
             else:
                 print(f"[StreamHandler:NL2SQL] 错误: {result.error}")
 
@@ -518,7 +518,7 @@ class StreamHandler:
         print(f"[StreamHandler:RAG] ========== 开始执行 ==========")
         print(f"[StreamHandler:RAG] 入参 original_task: {original_task}")
         print(f"[StreamHandler:RAG] 入参 original_question: {original_question}")
-        print(f"[StreamHandler:RAG] 入参 context({len(context)}字符): {context[:300]}...")
+        print(f"[StreamHandler:RAG] 入参 context({len(context)}字符): {context}")
         print(f"[StreamHandler:RAG] 入参 history_context({len(history_context)}字符)")
         t0 = time.time()
         try:
@@ -537,7 +537,7 @@ class StreamHandler:
             print(f"[StreamHandler:RAG] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:RAG] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
             if result.success:
-                print(f"[StreamHandler:RAG] 输出内容: {result.result[:300]}...")
+                print(f"[StreamHandler:RAG] 输出内容: {result.result}")
 
             return {
                 "success": result.success,
@@ -553,7 +553,7 @@ class StreamHandler:
         """执行 LLM 步骤"""
         print(f"[StreamHandler:LLM] ========== 开始执行 ==========")
         print(f"[StreamHandler:LLM] 入参 original_task: {original_task}")
-        print(f"[StreamHandler:LLM] 入参 context({len(context)}字符): {context[:300]}...")
+        print(f"[StreamHandler:LLM] 入参 context({len(context)}字符): {context}")
         t0 = time.time()
         try:
             from app.multi_agent.llm_agent import LLMAgent
@@ -565,7 +565,7 @@ class StreamHandler:
             print(f"[StreamHandler:LLM] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:LLM] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
             if result.success:
-                print(f"[StreamHandler:LLM] 输出内容: {result.result[:300]}...")
+                print(f"[StreamHandler:LLM] 输出内容: {result.result}")
 
             return {
                 "success": result.success,
@@ -581,7 +581,7 @@ class StreamHandler:
         """执行 Tool 步骤"""
         print(f"[StreamHandler:Tool] ========== 开始执行 ==========")
         print(f"[StreamHandler:Tool] 入参 original_task: {original_task}")
-        print(f"[StreamHandler:Tool] 入参 context({len(context)}字符): {context[:300]}...")
+        print(f"[StreamHandler:Tool] 入参 context({len(context)}字符): {context}")
         t0 = time.time()
         try:
             from app.tools.agent_loop import run_agent
@@ -596,7 +596,7 @@ class StreamHandler:
             print(f"[StreamHandler:Tool] 执行耗时: {duration:.0f}ms")
             print(f"[StreamHandler:Tool] 执行结果: success={result.get('success', False)}")
             if result.get("success"):
-                print(f"[StreamHandler:Tool] 输出内容: {str(result.get('answer', ''))[:300]}...")
+                print(f"[StreamHandler:Tool] 输出内容: {str(result.get('answer', ''))}")
             
             return {
                 "success": result.get("success", False),
@@ -1173,22 +1173,57 @@ class StreamHandler:
         """
         处理 Tool 任务
         
-        Args:
-            message: 用户消息
-            trace: LangFuse 追踪
-            route_context: 路由分析结果
-            route_info: 格式化的路由上下文
-            history_context: 历史上下文
-        
-        Yields:
-            SSE 格式的数据
+        优先使用 Router 指定的 tool_name 直接调用工具，
+        如果没有 tool_name 则 fallback 到 AgentLoop。
         """
         yield self._format_sse("processing", "正在调用工具...", "工具调用")
         
+        # 优先：Router 指定了具体 tool_name，直接调用
+        tool_name = (route_context or {}).get("tool_name", "")
+        if tool_name:
+            print(f"[StreamHandler] Router 指定工具: {tool_name}")
+            try:
+                from app.tools import TOOL_MAP
+                tool = TOOL_MAP.get(tool_name)
+                if not tool:
+                    print(f"[StreamHandler] 工具 {tool_name} 不存在，fallback 到 AgentLoop")
+                else:
+                    # 构建工具参数
+                    tool_args = self._build_tool_args(tool_name, message, route_context)
+                    print(f"[StreamHandler] 调用工具 {tool_name}，参数: {tool_args}")
+                    
+                    # 调用工具（在线程池中执行同步函数）
+                    answer = await asyncio.to_thread(tool.invoke, tool_args)
+                    
+                    print(f"[StreamHandler] 工具 {tool_name} 返回: {str(answer)}")
+                    
+                    # 检查是否返回确认框
+                    if isinstance(answer, dict) and answer.get("type") == "confirm":
+                        yield self._format_sse("confirm", answer, "确认操作")
+                        return
+                    
+                    # 检查是否返回错误
+                    if isinstance(answer, dict) and answer.get("type") == "error":
+                        yield self._format_sse("answer", answer.get("message", "操作失败"), "提示")
+                        return
+                    
+                    # 正常结果
+                    self._ai_response_parts.append(str(answer))
+                    self._ai_response_data_type = "text"
+                    
+                    if trace:
+                        create_span(trace, "tool_direct_result", {
+                            "tool_name": tool_name,
+                            "result_length": len(str(answer)),
+                        })
+                    return
+            except Exception as e:
+                print(f"[StreamHandler] 直接调用工具 {tool_name} 失败: {str(e)}，fallback 到 AgentLoop")
+        
+        # Fallback：使用 AgentLoop
         try:
             from app.tools.agent_loop import run_agent
             
-            # 合并上下文
             combined_context = route_info
             if history_context:
                 combined_context = f"{route_info}\n\n{history_context}" if route_info else history_context
@@ -1200,7 +1235,6 @@ class StreamHandler:
                 history_context=combined_context,
             )
             
-            # 记录结果
             if trace:
                 create_span(trace, "tool_result", {
                     "iterations": result.get("iterations", 0),
@@ -1208,13 +1242,10 @@ class StreamHandler:
                     "answer_length": len(result.get("answer", "")),
                 })
             
-            # 检查是否需要确认框
             answer = result.get("answer", "")
             if isinstance(answer, dict) and answer.get("type") == "confirm":
-                # 返回确认框数据
                 yield self._format_sse("confirm", answer, "确认操作")
             else:
-                # 收集 AI 回复（使用 json.dumps 确保是 JSON 格式）
                 if isinstance(answer, dict):
                     self._ai_response_parts.append(json.dumps(answer, ensure_ascii=False))
                 else:
@@ -1245,6 +1276,62 @@ class StreamHandler:
             self._ai_response_data_type = "text"
             
             yield self._format_sse("answer", friendly_msg, "提示")
+    
+    def _build_tool_args(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+        """
+        根据工具名称和用户消息构建工具参数
+        
+        Args:
+            tool_name: 工具名称
+            message: 用户消息
+            route_context: 路由上下文
+        
+        Returns:
+            工具参数字典
+        """
+        shop_id = self.user_context.shop_id
+        
+        # 查询类工具：只需要 shop_id 和可选参数
+        query_tools = {
+            "query_revenue": {"shop_id": shop_id},
+            "query_packages": {"shop_id": shop_id},
+            "query_top_packages": {"shop_id": shop_id},
+            "query_customer": {"shop_id": shop_id, "keyword": self._extract_keyword(message)},
+            "query_purchases": {"shop_id": shop_id},
+            "query_game_sessions": {"shop_id": shop_id},
+            "query_refunds": {"shop_id": shop_id},
+            "query_inventory": {"shop_id": shop_id},
+            "query_low_stock": {"shop_id": shop_id},
+            "query_staff_list": {"shop_id": shop_id},
+            "query_staff_performance": {"shop_id": shop_id},
+            "query_coupons": {"shop_id": shop_id},
+            "query_coupon_usages": {"shop_id": shop_id},
+            "query_feedbacks": {"shop_id": shop_id},
+            "query_staff_schedules": {"shop_id": shop_id},
+            "query_attendance_records": {"shop_id": shop_id},
+            "query_notifications": {"shop_id": shop_id},
+            "query_daily_snapshots": {"shop_id": shop_id},
+            "query_revenue_trend": {"shop_id": shop_id},
+            "query_operation_logs": {"shop_id": shop_id},
+        }
+        
+        if tool_name in query_tools:
+            return query_tools[tool_name]
+        
+        # 操作类工具：需要从上下文提取参数
+        # 这些工具返回确认框，参数由确认框收集
+        return {"shop_id": shop_id}
+    
+    def _extract_keyword(self, message: str) -> str:
+        """从用户消息中提取搜索关键词（如顾客名）"""
+        import re
+        # 移除常见动词和助词
+        stop_words = ["查一下", "查询", "查看", "查", "的", "信息", "详情", "帮我", "看看", "找一下"]
+        keyword = message.strip()
+        for word in stop_words:
+            keyword = keyword.replace(word, "")
+        keyword = keyword.strip()
+        return keyword if keyword else ""
     
     async def _process_confirm(
         self, 

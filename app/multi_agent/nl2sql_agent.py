@@ -417,12 +417,12 @@ class NL2SQLAgent:
                 raw_content = response.content.strip()
                 
                 # 调试日志
-                print(f"[NL2SQLAgent] 候选 {i+1} LLM 返回: {raw_content[:200]}...")
+                print(f"[NL2SQLAgent] 候选 {i+1} LLM 返回: {raw_content}")
                 
                 sql = sanitize_sql(raw_content)
                 
                 # 调试日志
-                print(f"[NL2SQLAgent] 候选 {i+1} 清理后: {sql[:200]}...")
+                print(f"[NL2SQLAgent] 候选 {i+1} 清理后: {sql}")
                 
                 if sql.upper().startswith("SELECT"):
                     candidates.append(sql)

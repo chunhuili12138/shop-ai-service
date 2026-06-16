@@ -127,8 +127,8 @@ def build_summarize_prompt(
         steps_text += f"步骤 {i+1}: {sr.get('action', '')} [{sr.get('tool', '')}] → {status}\n"
         if sr.get("success") and sr.get("result"):
             result = sr["result"]
-            if len(result) > 500:
-                result = result[:500] + "..."
+            if len(result) > 5000:
+                result = result[:5000] + "\n...（数据过多已截断）"
             steps_text += f"  结果: {result}\n"
         elif sr.get("error"):
             steps_text += f"  错误: {sr['error']}\n"
