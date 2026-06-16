@@ -329,137 +329,55 @@ def game_session_finish(shop_id: int, game_session_id: int) -> dict:
 # ==================== 执行函数（确认后调用，带事务）====================
 
 def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None, operator_id: Optional[int] = None) -> str:
-    """执行退款批准（事务）"""
-    engine = get_engine()
+    """执行退款批准 - 代理调用 Java 后端 API"""
+    from app.common.backend_client import approve_refund
+
     try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            # 校验退款属于当前店铺且状态为处理中
-            check = conn.execute(text(
-                "SELECT id, status FROM refund_records WHERE id = :rid AND shop_id = :sid AND is_deleted = 0 FOR UPDATE"
-            ), {"rid": refund_id, "sid": shop_id}).fetchone()
-            if not check:
-                return "退款记录不存在"
-            if check[1] != 1:
-                return f"退款状态不是待审核（当前状态: {check[1]}），无法批准"
-            # 更新为已完成
-            conn.execute(text(
-                "UPDATE refund_records SET status = 2, updated_at = NOW() WHERE id = :rid AND shop_id = :sid"
-            ), {"rid": refund_id, "sid": shop_id})
-            # 操作日志
-            if operator_id:
-                conn.execute(text(
-                    "INSERT INTO operation_logs (shop_id, operator_id, action, target_type, target_id, detail, created_at) "
-                    "VALUES (:sid, :oid, 'refund_approve', 'refund', :rid, :detail, NOW())"
-                ), {"sid": shop_id, "oid": operator_id, "rid": refund_id, "detail": json.dumps({"remark": remark}, ensure_ascii=False)})
-        return "退款审批通过"
+        result = approve_refund(token="", shop_id=shop_id, refund_id=refund_id)
+        if result.get("success"):
+            return "退款审批通过"
+        return result.get("msg", "确认退款失败")
     except Exception as e:
         return f"审批失败: {str(e)}"
 
 
-def execute_refund_reject(shop_id: int, refund_id: int, reason: str, operator_id: Optional[int] = None) -> str:
-    """执行退款拒绝（事务）- 逻辑与 Java 后端 rejectRefund 一致"""
-    engine = get_engine()
+def execute_refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None, operator_id: Optional[int] = None) -> str:
+    """执行退款拒绝 - 代理调用 Java 后端 API"""
+    from app.common.backend_client import reject_refund
+
     try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            # 1. 校验退款记录
-            check = conn.execute(text(
-                "SELECT id, status, purchase_id FROM refund_records WHERE id = :rid AND shop_id = :sid AND is_deleted = 0 FOR UPDATE"
-            ), {"rid": refund_id, "sid": shop_id}).fetchone()
-            if not check:
-                return "退款记录不存在"
-            if check[1] != 1:
-                return f"退款状态不是待审核（当前状态: {check[1]}），无法拒绝"
-
-            purchase_id = check[2]
-
-            # 2. 更新退款记录: status=3(已拒绝), reason=拒绝原因
-            conn.execute(text(
-                "UPDATE refund_records SET status = 3, reason = :reason, updated_at = NOW() WHERE id = :rid AND shop_id = :sid"
-            ), {"rid": refund_id, "sid": shop_id, "reason": reason})
-
-            # 3. 恢复购买记录: status=1(有效)
-            conn.execute(text(
-                "UPDATE purchases SET status = 1 WHERE id = :pid AND shop_id = :sid"
-            ), {"pid": purchase_id, "sid": shop_id})
-
-            # 4. 恢复场次: status=4(已退款) → status=1(可用)
-            conn.execute(text(
-                "UPDATE customer_sessions SET status = 1 WHERE purchase_id = :pid AND status = 4"
-            ), {"pid": purchase_id})
-
-            # 5. 操作日志
-            if operator_id:
-                conn.execute(text(
-                    "INSERT INTO operation_logs (shop_id, operator_id, action, target_type, target_id, detail, created_at) "
-                    "VALUES (:sid, :oid, 'refund_reject', 'refund', :rid, :detail, NOW())"
-                ), {"sid": shop_id, "oid": operator_id, "rid": refund_id,
-                    "detail": json.dumps({"reason": reason}, ensure_ascii=False)})
-
-        return "退款已拒绝"
+        result = reject_refund(token="", shop_id=shop_id, refund_id=refund_id, reason=reason or "")
+        if result.get("success"):
+            return "退款已拒绝"
+        return result.get("msg", "拒绝退款失败")
     except Exception as e:
         return f"拒绝失败: {str(e)}"
 
 
 def execute_game_session_checkin(shop_id: int, customer_id: int, customer_session_id: int, operator_id: Optional[int] = None) -> str:
-    """执行核销入座（事务）"""
-    engine = get_engine()
+    """执行核销入座 - 代理调用 Java 后端 API"""
+    from app.common.backend_client import checkin_game_session
+
     try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            # 校验场次状态
-            check = conn.execute(text(
-                "SELECT id, status FROM customer_sessions WHERE id = :cid AND shop_id = :sid AND is_deleted = 0 FOR UPDATE"
-            ), {"cid": customer_session_id, "sid": shop_id}).fetchone()
-            if not check:
-                return "场次不存在"
-            if check[1] != 1:
-                return f"场次状态不是可用（当前状态: {check[1]}），无法核销"
-            # 更新场次为已核销
-            conn.execute(text(
-                "UPDATE customer_sessions SET status = 2, updated_at = NOW() WHERE id = :cid AND shop_id = :sid"
-            ), {"cid": customer_session_id, "sid": shop_id})
-            # 创建游戏场次（staff_id 必须有效）
-            if not operator_id:
-                return "操作失败：缺少操作人ID"
-            conn.execute(text(
-                "INSERT INTO game_sessions (shop_id, customer_session_id, staff_id, start_time, status, created_at) "
-                "VALUES (:sid, :cid, :staff, NOW(), 1, NOW())"
-            ), {"sid": shop_id, "cid": customer_session_id, "staff": operator_id})
-            # 操作日志
-            conn.execute(text(
-                "INSERT INTO operation_logs (shop_id, operator_id, action, target_type, target_id, detail, created_at) "
-                "VALUES (:sid, :oid, 'checkin', 'customer_session', :cid, :detail, NOW())"
-            ), {"sid": shop_id, "oid": operator_id, "cid": customer_session_id,
-                "detail": json.dumps({"customer_id": customer_id}, ensure_ascii=False)})
-        return "核销成功"
+        result = checkin_game_session(
+            token="", shop_id=shop_id,
+            customer_id=customer_id, customer_session_id=customer_session_id,
+        )
+        if result.get("success"):
+            return "核销成功"
+        return result.get("msg", "核销失败")
     except Exception as e:
         return f"核销失败: {str(e)}"
 
 
 def execute_game_session_finish(shop_id: int, game_session_id: int, operator_id: Optional[int] = None) -> str:
-    """执行结束游玩（事务）"""
-    engine = get_engine()
+    """执行结束游玩 - 代理调用 Java 后端 API"""
+    from app.common.backend_client import finish_game_session
+
     try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            check = conn.execute(text(
-                "SELECT id, status FROM game_sessions WHERE id = :gid AND shop_id = :sid FOR UPDATE"
-            ), {"gid": game_session_id, "sid": shop_id}).fetchone()
-            if not check:
-                return "游戏场次不存在"
-            if check[1] != 1:
-                return "该场次已结束"
-            conn.execute(text(
-                "UPDATE game_sessions SET status = 2, end_time = NOW(), updated_at = NOW() WHERE id = :gid AND shop_id = :sid"
-            ), {"gid": game_session_id, "sid": shop_id})
-            if operator_id:
-                conn.execute(text(
-                    "INSERT INTO operation_logs (shop_id, operator_id, action, target_type, target_id, detail, created_at) "
-                    "VALUES (:sid, :oid, 'finish', 'game_session', :gid, :detail, NOW())"
-                ), {"sid": shop_id, "oid": operator_id, "gid": game_session_id,
-                    "detail": json.dumps({}, ensure_ascii=False)})
-        return "游玩结束"
+        result = finish_game_session(token="", shop_id=shop_id, game_session_id=game_session_id)
+        if result.get("success"):
+            return "游玩结束"
+        return result.get("msg", "操作失败")
     except Exception as e:
         return f"操作失败: {str(e)}"

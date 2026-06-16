@@ -176,6 +176,7 @@ async def verify_token(token: str, shop_id: Optional[int] = None) -> UserContext
         username=user_data.get("username", ""),
         display_name=user_data.get("nickname", ""),
         shop_name=actual_shop_name,
+        token=token,
     )
 
     # 5. 缓存

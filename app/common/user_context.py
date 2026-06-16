@@ -30,6 +30,7 @@ class UserContext:
     username: Optional[str] = None
     display_name: Optional[str] = None
     shop_name: Optional[str] = None
+    token: Optional[str] = None  # 原始 token，用于代理调用后端 API
     
     def has_permission(self, permission: str) -> bool:
         """
