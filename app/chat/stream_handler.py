@@ -236,7 +236,8 @@ class StreamHandler:
                 clarification = route_result.get("clarification", "请补充更多信息。")
                 self._ai_response_parts.append(clarification)
                 self._ai_response_data_type = "text"
-                yield self._format_sse("answer", clarification, "提示")
+                yield self._format_sse("error", clarification, "错误")
+                yield self._format_sse("done", "", "完成", done=True)
                 
                 # 发送快捷问题（前端可以显示为快捷按钮）
                 quick_questions = route_result.get("quick_questions", [])
@@ -250,7 +251,7 @@ class StreamHandler:
                 print(f"[StreamHandler] 实际执行任务: {actual_task}")
                 
                 # 单任务，按计划执行
-                async for event in self._execute_plan(actual_task, plan, understanding, analysis, history_context, trace, original_message=message):
+                async for event in self._execute_plan(actual_task, plan, understanding, analysis, history_context, trace, original_message=message, route_context=route_result):
                     yield event
             elif route_result.get("mode") == "multi":
                 # 多 Agent 任务
@@ -311,7 +312,8 @@ class StreamHandler:
                 except Exception as save_error:
                     print(f"[StreamHandler] 保存错误消息失败: {str(save_error)}")
             
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _execute_plan(
         self,
@@ -322,6 +324,7 @@ class StreamHandler:
         history_context: str,
         trace,
         original_message: str = "",
+        route_context: dict = None,
     ) -> AsyncGenerator[str, None]:
         """
         按照 Router 的计划逐步执行任务
@@ -334,6 +337,7 @@ class StreamHandler:
             history_context: 历史上下文
             trace: LangFuse 追踪
             original_message: 用户原始消息（用于 RAG 追问判断）
+            route_context: 路由上下文（Router 返回的完整结果，包含 tool_name 等）
         
         Yields:
             SSE 格式的数据
@@ -916,13 +920,15 @@ class StreamHandler:
                 friendly_msg = "抱歉，无法回答您的问题，请稍后重试。"
                 self._ai_response_parts.append(friendly_msg)
                 self._ai_response_data_type = "text"
-                yield self._format_sse("answer", friendly_msg, "提示")
+                yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
         except Exception as e:
             print(f"[StreamHandler] LLM 处理失败: {str(e)}")
             friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _process_multi(
         self, 
@@ -986,7 +992,8 @@ class StreamHandler:
                     final_result = content
                     break
                 elif step == "__error__":
-                    yield self._format_sse("answer", "抱歉，处理过程中出现问题，请稍后重试。", "提示")
+                    yield self._format_sse("error", "抱歉，处理过程中出现问题，请稍后重试。", "错误")
+                    yield self._format_sse("done", "", "完成", done=True)
                     return
                 else:
                     # 输出进度
@@ -1046,7 +1053,8 @@ class StreamHandler:
             friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _process_rag(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
@@ -1107,7 +1115,8 @@ class StreamHandler:
                 self._ai_response_parts.append(friendly_msg)
                 self._ai_response_data_type = "text"
                 
-                yield self._format_sse("answer", friendly_msg, "提示")
+                yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
             
         except Exception as e:
             print(f"[StreamHandler] RAG 处理失败: {str(e)}")
@@ -1116,7 +1125,8 @@ class StreamHandler:
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
             
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _process_nl2sql(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
@@ -1176,7 +1186,8 @@ class StreamHandler:
                 self._ai_response_parts.append(friendly_msg)
                 self._ai_response_data_type = "text"
                 
-                yield self._format_sse("answer", friendly_msg, "提示")
+                yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
         
         except Exception as e:
             # 异常：友好提示，不暴露错误细节
@@ -1186,7 +1197,8 @@ class StreamHandler:
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
             
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _process_llm(self, message: str, trace, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
@@ -1217,13 +1229,15 @@ class StreamHandler:
                 friendly_msg = "抱歉，无法回答您的问题，请稍后重试。"
                 self._ai_response_parts.append(friendly_msg)
                 self._ai_response_data_type = "text"
-                yield self._format_sse("answer", friendly_msg, "提示")
+                yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
         except Exception as e:
             print(f"[StreamHandler] LLM 处理失败: {str(e)}")
             friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _process_tool(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
         """
@@ -1260,7 +1274,8 @@ class StreamHandler:
                     
                     # 检查是否返回错误
                     if isinstance(answer, dict) and answer.get("type") == "error":
-                        yield self._format_sse("answer", answer.get("message", "操作失败"), "提示")
+                        yield self._format_sse("error", answer.get("message", "操作失败"), "错误")
+                        yield self._format_sse("done", "", "完成", done=True)
                         return
                     
                     # 正常结果
@@ -1331,7 +1346,8 @@ class StreamHandler:
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
             
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     def _build_tool_args(self, tool_name: str, message: str, route_context: dict = None) -> dict:
         """
@@ -1440,7 +1456,8 @@ class StreamHandler:
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
             
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     async def _process_vision(
         self, 
@@ -1490,7 +1507,8 @@ class StreamHandler:
                 self._ai_response_parts.append(friendly_msg)
                 self._ai_response_data_type = "text"
                 
-                yield self._format_sse("answer", friendly_msg, "提示")
+                yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
             
         except Exception as e:
             print(f"[StreamHandler] Vision 异常: {str(e)}")  # 只在控制台记录
@@ -1499,7 +1517,8 @@ class StreamHandler:
             self._ai_response_parts.append(friendly_msg)
             self._ai_response_data_type = "text"
             
-            yield self._format_sse("answer", friendly_msg, "提示")
+            yield self._format_sse("error", friendly_msg, "错误")
+            yield self._format_sse("done", "", "完成", done=True)
     
     def _format_sse(self, type: str, content: str, step: str, done: bool = False) -> str:
         """
