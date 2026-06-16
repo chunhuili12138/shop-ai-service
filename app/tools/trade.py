@@ -44,7 +44,7 @@ class RefundApproveInput(BaseModel):
 class RefundRejectInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
     refund_id: int = Field(description="退款记录ID")
-    reason: str = Field(description="拒绝原因")
+    reason: Optional[str] = Field(default=None, description="拒绝原因（用户在确认框中填写）")
 
 class GameSessionCheckinInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
@@ -222,7 +222,7 @@ def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -
 
 
 @tool(args_schema=RefundRejectInput)
-def refund_reject(shop_id: int, refund_id: int, reason: str) -> dict:
+def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) -> dict:
     """审批退款（拒绝）。返回确认框，需用户确认后执行。"""
     refund_sql = """
         SELECT rr.id, rr.purchase_id, c.nickname as customer_name,
