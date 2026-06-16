@@ -832,6 +832,10 @@ class StreamHandler:
                     if step_result and step_result.get("fallback"):
                         print(f"[StreamHandler] {tool} 参数不完整，fallback 到 AgentLoop")
                         step_result = await self._execute_step_tool(step_context, message)
+                    # 确认框类型：直接发 SSE confirm 事件，结束流程等待用户操作
+                    elif step_result and step_result.get("confirm_data"):
+                        yield self._format_sse("confirm", step_result["confirm_data"], "确认操作")
+                        return
                 else:
 
                     # 未知 tool 类型：打回 Router 重新生成
