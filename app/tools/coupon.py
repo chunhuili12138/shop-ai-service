@@ -29,7 +29,10 @@ class CouponUsagesQueryInput(BaseModel):
 
 @tool(args_schema=CouponsQueryInput)
 def query_coupons(shop_id: int, status: Optional[str] = None) -> str:
-    """查询店铺优惠券列表。"""
+    """
+    查询店铺优惠券列表。
+    支持按状态筛选（active=启用, disabled=禁用），返回优惠券名称、类型、面值、库存、有效期等信息。
+    """
     sql = """
         SELECT id, name, type, value, min_order_amount, total_stock,
                remain_stock, valid_days, is_active, created_at
@@ -156,7 +159,10 @@ def execute_grant_coupon(shop_id: int, coupon_id: int, customer_ids: str, operat
 
 @tool(args_schema=CouponUsagesQueryInput)
 def query_coupon_usages(shop_id: int, customer_id: Optional[int] = None, limit: int = 10) -> str:
-    """查询优惠券使用记录。"""
+    """
+    查询优惠券使用记录。
+    支持按顾客ID筛选，返回顾客昵称、优惠券名称、状态（未使用/已使用/已过期）、领取时间、过期时间。
+    """
     sql = """
         SELECT cu.id, c.nickname as customer_name, cp.name as coupon_name,
                cu.status, cu.used_at, cu.expires_at, cu.created_at

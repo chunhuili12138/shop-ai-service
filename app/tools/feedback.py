@@ -25,7 +25,10 @@ class ReplyFeedbackInput(BaseModel):
 
 @tool(args_schema=FeedbacksQueryInput)
 def query_feedbacks(shop_id: int, status: Optional[str] = None, limit: int = 10) -> str:
-    """查询顾客评价列表。"""
+    """
+    查询顾客评价列表。
+    支持按状态筛选（pending=待处理, replied=已回复），返回顾客昵称、评分、评价内容、回复状态。
+    """
     sql = """
         SELECT f.id, c.nickname as customer_name, f.feedback_type,
                f.rating, f.content, f.reply_content, f.status, f.created_at

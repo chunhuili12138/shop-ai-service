@@ -25,7 +25,10 @@ class SendNotificationInput(BaseModel):
 
 @tool(args_schema=NotificationsQueryInput)
 def query_notifications(shop_id: int, recipient_type: Optional[str] = None, limit: int = 10) -> str:
-    """查询通知列表。"""
+    """
+    查询通知列表。
+    支持按接收者类型筛选（staff=员工, customer=顾客），返回通知标题、内容、发送渠道、状态。
+    """
     sql = """
         SELECT id, title, content, recipient_type, recipient_id, channel, status, created_at
         FROM notification_logs WHERE shop_id = :shop_id
