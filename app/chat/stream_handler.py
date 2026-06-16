@@ -1245,7 +1245,10 @@ class StreamHandler:
     
     async def _extract_params_with_llm(self, tool_name: str, message: str, route_context: dict, history_text: str) -> dict:
         """
-        用 LLM 从对话上下文中提取工具参数（替代正则匹配）
+        用 LLM 从对话上下文中提取工具参数
+
+        从 Pydantic schema 自动提取完整参数规范（类型、描述、默认值），
+        不写死任何映射关系，完全依赖 schema 中的 description 信息。
 
         Args:
             tool_name: 工具名称
@@ -1265,46 +1268,58 @@ class StreamHandler:
             if not tool or not hasattr(tool, 'args_schema') or not tool.args_schema:
                 return {"shop_id": self.user_context.shop_id}
 
-            # 获取 Pydantic schema
+            # 从 Pydantic schema 提取完整参数规范
             schema = tool.args_schema
             schema_json = schema.model_json_schema()
             properties = schema_json.get("properties", {})
             required = schema_json.get("required", [])
 
-            # 构建参数说明
-            param_desc = []
+            # 构建参数说明（包含 type、必填/可选、默认值、完整 description）
+            param_lines = []
             for name, info in properties.items():
                 desc = info.get("description", name)
                 typ = info.get("type", "string")
-                is_required = "必填" if name in required else "可选"
-                param_desc.append(f"- {name}: {typ} ({is_required}) {desc}")
+                default = info.get("default")
+                if name in required:
+                    meta = "必填"
+                elif default is not None:
+                    meta = f"可选，默认: {default}"
+                else:
+                    meta = "可选，默认: null"
+                param_lines.append(f"- {name}: {typ} ({meta}) {desc}")
 
+            tool_desc = getattr(tool, 'description', tool_name)
             understanding = (route_context or {}).get("understanding", "")
             analysis = (route_context or {}).get("analysis", "")
 
             prompt = f"""根据对话上下文，提取调用工具所需的参数。
 
-工具名称: {tool_name}
-工具参数:
-{chr(10).join(param_desc)}
+工具: {tool_name}
+工具说明: {tool_desc}
 
-【对话上下文】
+参数规范:
+{chr(10).join(param_lines)}
+
+提取规则（必须严格遵守）:
+1. description 中的 "X=Y" 是值映射关系（如 "pending=处理中" 表示用户说"待处理"时应填 "pending"），必须按映射填值
+2. 必填参数必须提取，确实无法确定则填 null
+3. 可选参数无法确定时填 null（不要填空字符串 "" 或数字 0）
+4. 数字参数填数字（如 20），不要填字符串（如 "20"）
+5. 只返回一个 JSON 对象，不要返回任何其他文字
+
+对话上下文:
 {history_text}
 
-【Router 理解】
-{understanding}
+Router 理解: {understanding}
+Router 分析: {analysis}
 
-【用户原始消息】
-{message}
-
-请提取参数，返回 JSON 格式。如果某个参数无法从上下文中确定，使用空字符串""或数字0。
-只返回 JSON，不要其他内容。"""
+用户消息: {message}"""
 
             llm = get_chat_llm(temperature=0)
             response = await llm.ainvoke([HumanMessage(content=prompt)])
 
+            # 解析 JSON
             content = response.content.strip()
-            # 提取 JSON
             if "```json" in content:
                 start = content.find("```json") + 7
                 end = content.find("```", start)
@@ -1316,15 +1331,24 @@ class StreamHandler:
 
             import json
             params = json.loads(content)
-            params["shop_id"] = self.user_context.shop_id  # 确保 shop_id 正确
 
-            # 清理：空字符串转 None（Pydantic Optional[int] 不接受 ""）
+            # 清理：安全的类型转换，不破坏合法值
             for key, val in params.items():
-                if val == "" or val == 0:
-                    params[key] = None
-                elif isinstance(val, str) and val.strip() == "":
-                    params[key] = None
-            # shop_id 保持原值
+                if val is None:
+                    continue
+                if isinstance(val, str):
+                    stripped = val.strip()
+                    if stripped in ("", "null", "none", "None"):
+                        params[key] = None
+                    elif stripped.isdigit():
+                        params[key] = int(stripped)
+                    else:
+                        try:
+                            params[key] = float(stripped)
+                        except ValueError:
+                            pass  # 保持原字符串
+
+            # shop_id 强制覆盖（不可被 LLM 修改）
             params["shop_id"] = self.user_context.shop_id
 
             print(f"[StreamHandler:LLMExtract] {tool_name} 提取参数: {params}")
