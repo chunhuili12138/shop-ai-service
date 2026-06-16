@@ -67,14 +67,22 @@ def send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "s
     rt = 1 if recipient_type == "staff" else 2
     rt_name = "员工" if rt == 1 else "顾客"
     return {
-        "type": "confirm", "title": "确认发送通知",
+        "type": "confirm",
+        "tool_name": "send_notification",
+        "title": "确认发送通知",
         "message": f"确定要向 {len(id_list)} 位{rt_name}发送通知吗？",
         "details": {
             "接收者类型": rt_name,
             "接收人数": str(len(id_list)),
-            "标题": title,
-            "内容": content[:100]
         },
+        "fields": [
+            {"name": "title", "type": "input", "label": "通知标题", "required": True, "placeholder": "请输入通知标题", "value": title or ""},
+            {"name": "content", "type": "textarea", "label": "通知内容", "required": True, "placeholder": "请输入通知内容", "value": content or ""}
+        ],
+        "buttons": [
+            {"type": "confirm", "label": "确认发送"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "send_notification",
         "params": {
             "shop_id": shop_id, "recipient_ids": recipient_ids,

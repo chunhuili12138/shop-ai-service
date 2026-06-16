@@ -147,6 +147,7 @@ def material_inbound(shop_id: int, material_id: int, quantity: float, unit_price
     # 返回确认框数据
     return {
         "type": "confirm",
+        "tool_name": "material_inbound",
         "title": "确认入库",
         "message": f"确定要入库 {material_info['name']} 吗？",
         "details": {
@@ -155,16 +156,20 @@ def material_inbound(shop_id: int, material_id: int, quantity: float, unit_price
             "入库数量": f"{quantity}{material_info['unit']}",
             "当前库存": f"{current_quantity}{material_info['unit']}",
             "入库后库存": f"{current_quantity + quantity}{material_info['unit']}",
-            "单价": f"¥{unit_price}" if unit_price else "未填写",
-            "备注": remark or "无"
         },
+        "fields": [
+            {"name": "remark", "type": "input", "label": "备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""}
+        ],
+        "buttons": [
+            {"type": "confirm", "label": "确认入库"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "material_inbound",
         "params": {
             "shop_id": shop_id,
             "material_id": material_id,
             "quantity": quantity,
             "unit_price": unit_price,
-            "remark": remark
         }
     }
 
@@ -208,6 +213,7 @@ def material_outbound(shop_id: int, material_id: int, quantity: float, remark: O
     # 返回确认框数据
     return {
         "type": "confirm",
+        "tool_name": "material_outbound",
         "title": "确认出库",
         "message": f"确定要出库 {material_info['name']} 吗？",
         "details": {
@@ -216,8 +222,14 @@ def material_outbound(shop_id: int, material_id: int, quantity: float, remark: O
             "出库数量": f"{quantity}{material_info['unit']}",
             "当前库存": f"{current_quantity}{material_info['unit']}",
             "出库后库存": f"{current_quantity - quantity}{material_info['unit']}",
-            "备注": remark or "无"
         },
+        "fields": [
+            {"name": "remark", "type": "input", "label": "备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""}
+        ],
+        "buttons": [
+            {"type": "confirm", "label": "确认出库"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "material_outbound",
         "params": {
             "shop_id": shop_id,

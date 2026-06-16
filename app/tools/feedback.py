@@ -83,14 +83,22 @@ def reply_feedback(shop_id: int, feedback_id: int, reply_content: str) -> dict:
         if fb["status"] == 3:
             return {"type": "error", "message": "该评价已关闭"}
         return {
-            "type": "confirm", "title": "确认回复评价",
+            "type": "confirm",
+            "tool_name": "reply_feedback",
+            "title": "确认回复评价",
             "message": f"确定要回复这条评价吗？",
             "details": {
                 "评价内容": (fb["content"] or "")[:100],
-                "回复内容": reply_content[:100]
             },
+            "fields": [
+                {"name": "reply_content", "type": "textarea", "label": "回复内容", "required": True, "placeholder": "请输入回复内容", "value": reply_content or ""}
+            ],
+            "buttons": [
+                {"type": "confirm", "label": "确认回复"},
+                {"type": "cancel", "label": "取消"}
+            ],
             "action": "reply_feedback",
-            "params": {"shop_id": shop_id, "feedback_id": feedback_id, "reply_content": reply_content}
+            "params": {"shop_id": shop_id, "feedback_id": feedback_id}
         }
     except Exception as e:
         return {"type": "error", "message": f"查询失败: {str(e)}"}

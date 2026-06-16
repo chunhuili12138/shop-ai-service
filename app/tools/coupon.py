@@ -94,7 +94,9 @@ def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
             dup_ids = [r["customer_id"] for r in dup_results]
             return {"type": "error", "message": f"顾客 {dup_ids} 已领取过该优惠券"}
         return {
-            "type": "confirm", "title": "确认发放优惠券",
+            "type": "confirm",
+            "tool_name": "grant_coupon",
+            "title": "确认发放优惠券",
             "message": f"确定要将「{coupon['name']}」发放给 {len(id_list)} 位顾客吗？",
             "details": {
                 "优惠券": coupon["name"],
@@ -102,6 +104,11 @@ def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
                 "当前库存": str(coupon["remain_stock"]),
                 "有效期": f"{coupon['valid_days']}天"
             },
+            "fields": [],
+            "buttons": [
+                {"type": "confirm", "label": "确认发放"},
+                {"type": "cancel", "label": "取消"}
+            ],
             "action": "grant_coupon",
             "params": {"shop_id": shop_id, "coupon_id": coupon_id, "customer_ids": customer_ids}
         }

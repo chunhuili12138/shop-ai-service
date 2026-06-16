@@ -283,13 +283,20 @@ def game_session_checkin(shop_id: int, customer_id: int, customer_session_id: in
         status_names = {2: "已核销", 3: "已过期", 4: "已退款"}
         return {"type": "error", "message": f"该场次{status_names.get(info['status'], '不可用')}"}
     return {
-        "type": "confirm", "title": "确认核销",
+        "type": "confirm",
+        "tool_name": "game_session_checkin",
+        "title": "确认核销",
         "message": f"确定要为 {info['nickname']} 核销套餐吗？",
         "details": {
             "顾客": info["nickname"], "手机": info["phone"] or "未绑定",
             "套餐": info["package_name"], "时长": f"{info['duration_minutes']}分钟",
             "场次日期": str(info["session_date"])
         },
+        "fields": [],
+        "buttons": [
+            {"type": "confirm", "label": "确认核销"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "game_session_checkin",
         "params": {"shop_id": shop_id, "customer_id": customer_id, "customer_session_id": customer_session_id}
     }
@@ -315,12 +322,19 @@ def game_session_finish(shop_id: int, game_session_id: int) -> dict:
     if info["status"] != 1:
         return {"type": "error", "message": "该场次已结束"}
     return {
-        "type": "confirm", "title": "确认结束游玩",
+        "type": "confirm",
+        "tool_name": "game_session_finish",
+        "title": "确认结束游玩",
         "message": f"确定要结束 {info['customer_name']} 的游玩吗？",
         "details": {
             "顾客": info["customer_name"], "套餐": info["package_name"],
             "开始时间": str(info["start_time"])
         },
+        "fields": [],
+        "buttons": [
+            {"type": "confirm", "label": "确认结束"},
+            {"type": "cancel", "label": "取消"}
+        ],
         "action": "game_session_finish",
         "params": {"shop_id": shop_id, "game_session_id": game_session_id}
     }
