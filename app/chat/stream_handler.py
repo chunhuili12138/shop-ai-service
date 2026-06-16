@@ -2748,19 +2748,18 @@ class StreamHandler:
         # 退款相关：提取 refund_id
         if tool_name in ("refund_approve", "refund_reject"):
             import re
-            # 从理解文本或历史中提取退款单号
             combined = f"{understanding} {history}"
-            id_match = re.search(r'退款单号[：:]\s*(\d+)', combined)
+            # 匹配多种格式：退款单号：6、记录ID: 6、ID为6、单号6
+            id_match = re.search(r'(?:退款单号|记录[Ii][Dd]|单号|ID)[为：:\s]*(\d+)', combined)
             if id_match:
                 args["refund_id"] = int(id_match.group(1))
-            # 提取顾客名作为备选
-            customer_match = re.search(r'顾客[为：:]*["\u201c]?(\S+?)["\u201d]?', combined)
+            # 提取顾客名（贪婪匹配中文+字母，排除标点）
+            customer_match = re.search(r'(?:顾客|用户)[为：:]*["\u201c]?([\u4e00-\u9fa5a-zA-Z0-9_]+)["\u201d]?', combined)
             if customer_match:
                 args["_customer_name"] = customer_match.group(1)
 
         # 退款拒绝：提取原因
         if tool_name == "refund_reject":
-            # 从用户消息中提取原因
             reason_keywords = ["因为", "原因", "由于", "理由"]
             reason = ""
             for kw in reason_keywords:
@@ -2768,12 +2767,14 @@ class StreamHandler:
                     reason = message.split(kw, 1)[1].strip()
                     break
             if not reason:
-                # 从理解文本中提取
                 for kw in reason_keywords:
                     if kw in understanding:
                         reason = understanding.split(kw, 1)[1].strip()
                         break
-            args["reason"] = reason if reason else "店长审批拒绝"
+            if not reason:
+                # 用用户原始消息作为原因（截取关键部分）
+                reason = message.strip() if len(message.strip()) < 50 else "店长审批拒绝"
+            args["reason"] = reason
 
         return args
 
