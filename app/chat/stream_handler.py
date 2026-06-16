@@ -826,11 +826,12 @@ class StreamHandler:
                 from app.tools import TOOL_MAP
 
                 if tool in TOOL_MAP:
-
                     print(f"[StreamHandler] 直接调用工具: {tool}")
-
                     step_result = await self._execute_tool_direct(tool, message, route_context)
-
+                    # 参数不完整时 fallback 到 AgentLoop
+                    if step_result and step_result.get("fallback"):
+                        print(f"[StreamHandler] {tool} 参数不完整，fallback 到 AgentLoop")
+                        step_result = await self._execute_step_tool(step_context, message)
                 else:
 
                     # 未知 tool 类型：打回 Router 重新生成
@@ -1282,10 +1283,21 @@ class StreamHandler:
             
 
             tool_args = self._build_tool_args(tool_name, message, route_context)
-
             print(f"[StreamHandler:ToolDirect] 调用 {tool_name}，参数: {tool_args}")
 
-            
+            # 校验必填参数
+            if hasattr(tool, 'args_schema') and tool.args_schema:
+                try:
+                    tool.args_schema(**tool_args)
+                except Exception as ve:
+                    missing = []
+                    if hasattr(ve, 'errors'):
+                        for err in ve.errors():
+                            if err.get('type') == 'missing':
+                                missing.extend(err.get('loc', []))
+                    if missing:
+                        print(f"[StreamHandler:ToolDirect] {tool_name} 缺失参数: {missing}，fallback 到 AgentLoop")
+                        return {"success": False, "result": "", "error": f"缺少参数: {', '.join(missing)}", "fallback": True}
 
             answer = await asyncio.to_thread(tool.invoke, tool_args)
 
@@ -2688,92 +2700,102 @@ class StreamHandler:
     
 
     def _build_tool_args(self, tool_name: str, message: str, route_context: dict = None) -> dict:
-
         """
-
         根据工具名称和用户消息构建工具参数
 
-        
-
         Args:
-
             tool_name: 工具名称
-
             message: 用户消息
-
-            route_context: 路由上下文
-
-        
+            route_context: 路由上下文（包含 understanding, plan 等）
 
         Returns:
-
             工具参数字典
-
         """
-
         shop_id = self.user_context.shop_id
 
-        
-
         # 查询类工具：只需要 shop_id 和可选参数
-
         query_tools = {
-
             "query_revenue": {"shop_id": shop_id},
-
             "query_packages": {"shop_id": shop_id},
-
             "query_top_packages": {"shop_id": shop_id},
-
             "query_customer": {"shop_id": shop_id, "keyword": self._extract_keyword(message)},
-
             "query_purchases": {"shop_id": shop_id},
-
             "query_game_sessions": {"shop_id": shop_id},
-
             "query_refunds": {"shop_id": shop_id},
-
             "query_inventory": {"shop_id": shop_id},
-
             "query_low_stock": {"shop_id": shop_id},
-
             "query_staff_list": {"shop_id": shop_id},
-
             "query_staff_performance": {"shop_id": shop_id},
-
             "query_coupons": {"shop_id": shop_id},
-
             "query_coupon_usages": {"shop_id": shop_id},
-
             "query_feedbacks": {"shop_id": shop_id},
-
             "query_staff_schedules": {"shop_id": shop_id},
-
             "query_attendance_records": {"shop_id": shop_id},
-
             "query_notifications": {"shop_id": shop_id},
-
             "query_daily_snapshots": {"shop_id": shop_id},
-
             "query_revenue_trend": {"shop_id": shop_id},
-
             "query_operation_logs": {"shop_id": shop_id},
-
         }
 
-        
-
         if tool_name in query_tools:
-
             return query_tools[tool_name]
 
-        
+        # 操作类工具：从上下文提取参数
+        args = {"shop_id": shop_id}
+        understanding = (route_context or {}).get("understanding", "")
+        history = self._get_history_text()
 
-        # 操作类工具：需要从上下文提取参数
+        # 退款相关：提取 refund_id
+        if tool_name in ("refund_approve", "refund_reject"):
+            import re
+            # 从理解文本或历史中提取退款单号
+            combined = f"{understanding} {history}"
+            id_match = re.search(r'退款单号[：:]\s*(\d+)', combined)
+            if id_match:
+                args["refund_id"] = int(id_match.group(1))
+            # 提取顾客名作为备选
+            customer_match = re.search(r'顾客[为：:]*["\u201c]?(\S+?)["\u201d]?', combined)
+            if customer_match:
+                args["_customer_name"] = customer_match.group(1)
 
-        # 这些工具返回确认框，参数由确认框收集
+        # 退款拒绝：提取原因
+        if tool_name == "refund_reject":
+            # 从用户消息中提取原因
+            reason_keywords = ["因为", "原因", "由于", "理由"]
+            reason = ""
+            for kw in reason_keywords:
+                if kw in message:
+                    reason = message.split(kw, 1)[1].strip()
+                    break
+            if not reason:
+                # 从理解文本中提取
+                for kw in reason_keywords:
+                    if kw in understanding:
+                        reason = understanding.split(kw, 1)[1].strip()
+                        break
+            args["reason"] = reason if reason else "店长审批拒绝"
 
-        return {"shop_id": shop_id}
+        return args
+
+    def _get_history_text(self) -> str:
+        """获取最近的历史对话文本"""
+        try:
+            if self.session_id:
+                from app.rag.session import get_session_manager
+                session_mgr = get_session_manager()
+                history = session_mgr.get_history(self.session_id)
+                if history:
+                    recent = history[-6:]  # 最近 3 轮
+                    parts = []
+                    for msg in recent:
+                        role = msg.get("role", "")
+                        content = msg.get("content", "")
+                        if content:
+                            parts.append(f"{role}: {content[:200]}")
+                    return "\n".join(parts)
+        except Exception:
+            pass
+        return ""
 
     
 
