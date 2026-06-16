@@ -1318,6 +1318,15 @@ class StreamHandler:
             params = json.loads(content)
             params["shop_id"] = self.user_context.shop_id  # 确保 shop_id 正确
 
+            # 清理：空字符串转 None（Pydantic Optional[int] 不接受 ""）
+            for key, val in params.items():
+                if val == "" or val == 0:
+                    params[key] = None
+                elif isinstance(val, str) and val.strip() == "":
+                    params[key] = None
+            # shop_id 保持原值
+            params["shop_id"] = self.user_context.shop_id
+
             print(f"[StreamHandler:LLMExtract] {tool_name} 提取参数: {params}")
             return params
 

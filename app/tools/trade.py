@@ -358,26 +358,45 @@ def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] =
 
 
 def execute_refund_reject(shop_id: int, refund_id: int, reason: str, operator_id: Optional[int] = None) -> str:
-    """执行退款拒绝（事务）"""
+    """执行退款拒绝（事务）- 逻辑与 Java 后端 rejectRefund 一致"""
     engine = get_engine()
     try:
         with engine.begin() as conn:
             from sqlalchemy import text
+            # 1. 校验退款记录
             check = conn.execute(text(
-                "SELECT id, status FROM refund_records WHERE id = :rid AND shop_id = :sid AND is_deleted = 0 FOR UPDATE"
+                "SELECT id, status, purchase_id FROM refund_records WHERE id = :rid AND shop_id = :sid AND is_deleted = 0 FOR UPDATE"
             ), {"rid": refund_id, "sid": shop_id}).fetchone()
             if not check:
                 return "退款记录不存在"
             if check[1] != 1:
                 return f"退款状态不是待审核（当前状态: {check[1]}），无法拒绝"
+
+            purchase_id = check[2]
+
+            # 2. 更新退款记录: status=3(已拒绝), remark=reason
             conn.execute(text(
-                "UPDATE refund_records SET status = 3, reason = :reason, updated_at = NOW() WHERE id = :rid AND shop_id = :sid"
+                "UPDATE refund_records SET status = 3, remark = :reason, updated_at = NOW() WHERE id = :rid AND shop_id = :sid"
             ), {"rid": refund_id, "sid": shop_id, "reason": reason})
+
+            # 3. 恢复购买记录: status=1(有效)
+            conn.execute(text(
+                "UPDATE purchases SET status = 1 WHERE id = :pid AND shop_id = :sid"
+            ), {"pid": purchase_id, "sid": shop_id})
+
+            # 4. 恢复场次: status=4(已退款) → status=1(可用)
+            conn.execute(text(
+                "UPDATE customer_sessions SET status = 1 WHERE purchase_id = :pid AND status = 4"
+            ), {"pid": purchase_id})
+
+            # 5. 操作日志
             if operator_id:
                 conn.execute(text(
                     "INSERT INTO operation_logs (shop_id, operator_id, action, target_type, target_id, detail, created_at) "
                     "VALUES (:sid, :oid, 'refund_reject', 'refund', :rid, :detail, NOW())"
-                ), {"sid": shop_id, "oid": operator_id, "rid": refund_id, "detail": json.dumps({"reason": reason}, ensure_ascii=False)})
+                ), {"sid": shop_id, "oid": operator_id, "rid": refund_id,
+                    "detail": json.dumps({"reason": reason}, ensure_ascii=False)})
+
         return "退款已拒绝"
     except Exception as e:
         return f"拒绝失败: {str(e)}"
