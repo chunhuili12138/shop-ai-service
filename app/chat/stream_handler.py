@@ -411,8 +411,14 @@ class StreamHandler:
                 print(f"[StreamHandler] 调用 Tool Agent...")
                 step_result = await self._execute_step_tool(step_context, message)
             else:
-                print(f"[StreamHandler] 未知工具类型: {tool}，使用 LLM")
-                step_result = await self._execute_step_llm(step_context, message, history_context)
+                # 检查是否是 TOOL_MAP 中的具体工具名（如 query_refunds, refund_approve 等）
+                from app.tools import TOOL_MAP
+                if tool in TOOL_MAP:
+                    print(f"[StreamHandler] 直接调用工具: {tool}")
+                    step_result = await self._execute_tool_direct(tool, message, route_context)
+                else:
+                    print(f"[StreamHandler] 未知工具类型: {tool}，使用 LLM")
+                    step_result = await self._execute_step_llm(step_context, message, history_context)
 
             step_duration = (time.time() - step_start) * 1000
             print(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
@@ -606,6 +612,48 @@ class StreamHandler:
         except Exception as e:
             duration = (time.time() - t0) * 1000
             print(f"[StreamHandler:Tool] 异常({duration:.0f}ms): {str(e)}")
+            return {"success": False, "result": "", "error": str(e)}
+    
+    async def _execute_tool_direct(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+        """
+        直接调用 TOOL_MAP 中的工具（不经过 AgentLoop）
+        
+        Args:
+            tool_name: 工具名称（如 query_refunds, refund_approve）
+            message: 用户消息
+            route_context: 路由上下文
+        
+        Returns:
+            {"success": bool, "result": str, "error": str}
+        """
+        t0 = time.time()
+        try:
+            from app.tools import TOOL_MAP
+            tool = TOOL_MAP.get(tool_name)
+            if not tool:
+                return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
+            
+            tool_args = self._build_tool_args(tool_name, message, route_context)
+            print(f"[StreamHandler:ToolDirect] 调用 {tool_name}，参数: {tool_args}")
+            
+            answer = await asyncio.to_thread(tool.invoke, tool_args)
+            
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:ToolDirect] {tool_name} 执行耗时: {duration:.0f}ms")
+            print(f"[StreamHandler:ToolDirect] {tool_name} 返回: {str(answer)}")
+            
+            # 确认框类型直接返回
+            if isinstance(answer, dict) and answer.get("type") == "confirm":
+                return {"success": True, "result": str(answer), "error": ""}
+            
+            # 错误类型
+            if isinstance(answer, dict) and answer.get("type") == "error":
+                return {"success": False, "result": "", "error": answer.get("message", "操作失败")}
+            
+            return {"success": True, "result": str(answer), "error": ""}
+        except Exception as e:
+            duration = (time.time() - t0) * 1000
+            print(f"[StreamHandler:ToolDirect] {tool_name} 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
     
     def _is_valid_result(self, result: str, action: str) -> bool:
