@@ -433,7 +433,7 @@ class AgentLoop:
                     }
                 )
             except Exception as e:
-                print(f"[LangFuse] 记录 Span 失败: {str(e)}")
+                logger.error(f"[LangFuse] 记录 Span 失败: {str(e)}")
         
         # 刷新 LangFuse 缓存
         flush()
