@@ -1351,6 +1351,9 @@ Router 分析: {analysis}
             # shop_id 强制覆盖（不可被 LLM 修改）
             params["shop_id"] = self.user_context.shop_id
 
+            # 移除值为 None 的参数（让 Pydantic 使用 schema 中的默认值）
+            params = {k: v for k, v in params.items() if v is not None}
+
             print(f"[StreamHandler:LLMExtract] {tool_name} 提取参数: {params}")
             return params
 
