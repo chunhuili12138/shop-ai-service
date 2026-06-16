@@ -71,6 +71,21 @@ def sync_all_knowledge_job():
         logger.error(f"知识库全量同步失败: {str(e)}")
 
 
+def sync_schema_job():
+    """同步数据库 Schema 到 JSON 文件（每天凌晨3点）"""
+    logger.info("执行 Schema 同步...")
+    try:
+        from scripts.sync_schema import sync_schema
+        from app.nl2sql.schema import invalidate_schema_cache
+
+        result = sync_schema()
+        table_count = len(result.get("tables", {}))
+        invalidate_schema_cache()
+        logger.info(f"Schema 同步完成: {table_count} 张表")
+    except Exception as e:
+        logger.error(f"Schema 同步失败: {str(e)}")
+
+
 def start_scheduler():
     """
     启动定时任务调度器
@@ -81,8 +96,9 @@ def start_scheduler():
     """
     schedule.every(1).hours.do(sync_packages_job)
     schedule.every().day.at("02:00").do(sync_all_knowledge_job)
+    schedule.every().day.at("03:00").do(sync_schema_job)
 
-    logger.info("定时任务已启动：每小时同步套餐，每天凌晨2点同步全部知识库")
+    logger.info("定时任务已启动：每小时同步套餐，每天凌晨2点同步知识库，每天凌晨3点同步Schema")
 
     def run_scheduler():
         while True:
