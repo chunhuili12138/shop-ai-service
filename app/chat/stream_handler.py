@@ -417,8 +417,9 @@ class StreamHandler:
                     print(f"[StreamHandler] 直接调用工具: {tool}")
                     step_result = await self._execute_tool_direct(tool, message, route_context)
                 else:
-                    print(f"[StreamHandler] 未知工具类型: {tool}，使用 LLM")
-                    step_result = await self._execute_step_llm(step_context, message, history_context)
+                    # 不 fallback 到 LLM，直接报错（防止 LLM 编造假数据）
+                    print(f"[StreamHandler] 不支持的工具类型: {tool}，跳过此步骤")
+                    step_result = {"success": False, "result": "", "error": f"不支持的工具类型: {tool}"}
 
             step_duration = (time.time() - step_start) * 1000
             print(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
