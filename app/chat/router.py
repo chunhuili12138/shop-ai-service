@@ -125,9 +125,10 @@ async def confirm_action(
             )
             raise HTTPException(status_code=403, detail=f"当前角色无权执行此操作: {request.action}")
 
-        # 4. 添加操作人ID
+        # 4. 添加操作人ID 和 token（用于代理调用 Java 后端 API）
         params = request.params.copy()
         params["operator_id"] = user_context.user_id
+        params["token"] = token
 
         # 5. 执行操作
         result = execute_func(**params)

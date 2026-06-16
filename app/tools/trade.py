@@ -342,12 +342,12 @@ def game_session_finish(shop_id: int, game_session_id: int) -> dict:
 
 # ==================== 执行函数（确认后调用，带事务）====================
 
-def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None, operator_id: Optional[int] = None) -> str:
+def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
     """执行退款批准 - 代理调用 Java 后端 API"""
     from app.common.backend_client import approve_refund
 
     try:
-        result = approve_refund(token="", shop_id=shop_id, refund_id=refund_id)
+        result = approve_refund(token=token or "", shop_id=shop_id, refund_id=refund_id)
         if result.get("success"):
             return "退款审批通过"
         return result.get("msg", "确认退款失败")
@@ -355,12 +355,12 @@ def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] =
         return f"审批失败: {str(e)}"
 
 
-def execute_refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None, operator_id: Optional[int] = None) -> str:
+def execute_refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
     """执行退款拒绝 - 代理调用 Java 后端 API"""
     from app.common.backend_client import reject_refund
 
     try:
-        result = reject_refund(token="", shop_id=shop_id, refund_id=refund_id, reason=reason or "")
+        result = reject_refund(token=token or "", shop_id=shop_id, refund_id=refund_id, reason=reason or "")
         if result.get("success"):
             return "退款已拒绝"
         return result.get("msg", "拒绝退款失败")
@@ -368,13 +368,13 @@ def execute_refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = 
         return f"拒绝失败: {str(e)}"
 
 
-def execute_game_session_checkin(shop_id: int, customer_id: int, customer_session_id: int, operator_id: Optional[int] = None) -> str:
+def execute_game_session_checkin(shop_id: int, customer_id: int, customer_session_id: int, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
     """执行核销入座 - 代理调用 Java 后端 API"""
     from app.common.backend_client import checkin_game_session
 
     try:
         result = checkin_game_session(
-            token="", shop_id=shop_id,
+            token=token or "", shop_id=shop_id,
             customer_id=customer_id, customer_session_id=customer_session_id,
         )
         if result.get("success"):
@@ -384,12 +384,12 @@ def execute_game_session_checkin(shop_id: int, customer_id: int, customer_sessio
         return f"核销失败: {str(e)}"
 
 
-def execute_game_session_finish(shop_id: int, game_session_id: int, operator_id: Optional[int] = None) -> str:
+def execute_game_session_finish(shop_id: int, game_session_id: int, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
     """执行结束游玩 - 代理调用 Java 后端 API"""
     from app.common.backend_client import finish_game_session
 
     try:
-        result = finish_game_session(token="", shop_id=shop_id, game_session_id=game_session_id)
+        result = finish_game_session(token=token or "", shop_id=shop_id, game_session_id=game_session_id)
         if result.get("success"):
             return "游玩结束"
         return result.get("msg", "操作失败")
