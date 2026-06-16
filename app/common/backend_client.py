@@ -95,7 +95,7 @@ def checkin_game_session(token: str, shop_id: int, customer_id: int, customer_se
     return call_backend_api_sync(
         "POST", "/api/gameSessionsCheckin",
         token=token, shop_id=shop_id,
-        params={"customerId": str(customer_id), "customerSessionId": str(customer_session_id)},
+        params={"customersId": str(customer_id), "customerSessionId": str(customer_session_id)},
     )
 
 
