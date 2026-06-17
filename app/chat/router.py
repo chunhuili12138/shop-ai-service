@@ -327,13 +327,13 @@ async def confirm_action(
         )
         return {"success": True, "message": summary}
 
-    except HTTPException:
+    except HTTPException as e:
         # 保存错误消息到会话
         if request.session_id:
             try:
                 from app.rag.session import get_session_manager
                 session_mgr = get_session_manager()
-                session_mgr.add_message(request.session_id, "assistant", f"操作失败: {HTTPException.detail}")
+                session_mgr.add_message(request.session_id, "assistant", f"操作失败: {e.detail}")
             except Exception:
                 pass
         raise
