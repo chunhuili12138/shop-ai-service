@@ -195,6 +195,10 @@ async def select_action(
         token, shop_id = parse_authorization(authorization)
         user_context = await verify_token(token, shop_id)
 
+        # 1.5 校验 selected_ids
+        if not request.selected_ids or len(request.selected_ids) == 0:
+            raise HTTPException(status_code=400, detail="请选择至少一条记录")
+
         # 2. 获取批量执行函数
         batch_action = f"{request.action}_batch"
         from app.tools import EXECUTE_FUNCTIONS
@@ -207,9 +211,12 @@ async def select_action(
             if not single_func:
                 raise HTTPException(status_code=400, detail=f"未知的操作类型: {request.action}")
 
+            # 根据 action 确定 ID 参数名
+            id_param = "refund_id" if "refund" in request.action else "id"
+
             for item_id in request.selected_ids:
                 params = request.params.copy()
-                params["refund_id" if "refund" in request.action else "id"] = item_id
+                params[id_param] = item_id
                 params["operator_id"] = user_context.user_id
                 params["token"] = token
                 try:

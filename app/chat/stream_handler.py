@@ -1320,6 +1320,16 @@ class StreamHandler:
             understanding = (route_context or {}).get("understanding", "")
             analysis = (route_context or {}).get("analysis", "")
 
+            # 退款工具特殊规则（只对退款相关工具生效）
+            refund_rules = ""
+            if tool_name in ("refund_approve", "refund_reject"):
+                refund_rules = """
+
+退款操作特殊规则:
+- 如果用户指定了顾客姓名（如"赵丽颖的退款"），额外提取 _customer_name 字段
+- 如果用户指定了多个退款ID（如"拒绝退款9和10"），额外提取 _refund_ids 字段（数组格式）
+- 如果用户说"全部拒绝"但没有指定具体ID，_refund_ids 设为 null"""
+
             prompt = f"""根据对话上下文，提取调用工具所需的参数。
 
 工具: {tool_name}
@@ -1334,11 +1344,7 @@ class StreamHandler:
 3. 可选参数无法确定时填 null（不要填空字符串 "" 或数字 0）
 4. 数字参数填数字（如 20），不要填字符串（如 "20"）
 5. 只返回一个 JSON 对象，不要返回任何其他文字
-
-退款操作特殊规则:
-- 如果用户指定了顾客姓名（如"赵丽颖的退款"），额外提取 _customer_name 字段
-- 如果用户指定了多个退款ID（如"拒绝退款9和10"），额外提取 _refund_ids 字段（数组格式）
-- 如果用户说"全部拒绝"但没有指定具体ID，_refund_ids 设为 null
+{refund_rules}
 
 对话上下文:
 {history_text}
@@ -1555,6 +1561,13 @@ Router 分析: {analysis}
                 pending = params.get("_pending_refunds")
                 if pending and params.get("_multi_select"):
                     # 多条匹配，返回 select 类型让前端渲染选择列表
+                    # 根据 tool_name 动态生成 fields
+                    select_fields = []
+                    if "refund_reject" in tool_name:
+                        select_fields = [{"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝理由"}]
+                    elif "refund_approve" in tool_name:
+                        select_fields = [{"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注"}]
+
                     return {
                         "success": True,
                         "result": "",
@@ -1563,7 +1576,7 @@ Router 分析: {analysis}
                             "title": f"选择要操作的{tool_name.replace('_', ' ')}",
                             "message": f"找到 {len(pending)} 条匹配记录，请选择：",
                             "items": pending,
-                            "fields": [{"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝理由"}],
+                            "fields": select_fields,
                             "buttons": [
                                 {"type": "confirm", "label": "确认操作选中项"},
                                 {"type": "cancel", "label": "取消"},
