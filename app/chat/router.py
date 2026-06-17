@@ -241,9 +241,12 @@ async def select_action(
                         params["customer_id"] = cs[0]["customer_id"]
 
                 try:
+                    logger.info(f"[Select] 执行 {request.action} item_id={item_id}, params={params}")
                     result = single_func(**params)
+                    logger.info(f"[Select] {request.action} item_id={item_id} 返回: {result}")
                     results.append({"id": item_id, "success": True, "message": result})
                 except Exception as e:
+                    logger.error(f"[Select] {request.action} item_id={item_id} 异常: {str(e)}")
                     results.append({"id": item_id, "success": False, "message": str(e)})
 
             success_count = sum(1 for r in results if r["success"])
