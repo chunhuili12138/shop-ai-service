@@ -50,7 +50,7 @@ def query_packages(shop_id: int, package_type: Optional[str] = None) -> str:
     params = {"shop_id": shop_id}
 
     if package_type:
-        type_map = {"single": 1, "week": 2, "month": 3}
+        type_map = {"single": "SINGLE", "week": "WEEKLY", "month": "MONTHLY"}
         if package_type in type_map:
             sql += " AND type = :type"
             params["type"] = type_map[package_type]
@@ -62,7 +62,7 @@ def query_packages(shop_id: int, package_type: Optional[str] = None) -> str:
         if not results:
             return "暂无套餐数据"
 
-        type_names = {1: "单次", 2: "周卡", 3: "月卡"}
+        type_names = {"SINGLE": "单次", "WEEKLY": "周卡", "MONTHLY": "月卡", 1: "单次", 2: "周卡", 3: "月卡"}
         status_names = {0: "已下架", 1: "在售"}
 
         output = "套餐列表:\n"
