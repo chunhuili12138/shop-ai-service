@@ -1320,15 +1320,21 @@ class StreamHandler:
             understanding = (route_context or {}).get("understanding", "")
             analysis = (route_context or {}).get("analysis", "")
 
-            # 退款工具特殊规则（只对退款相关工具生效）
-            refund_rules = ""
+            # 特殊工具的额外提取规则
+            extra_rules = ""
             if tool_name in ("refund_approve", "refund_reject"):
-                refund_rules = """
+                extra_rules = """
 
 退款操作特殊规则:
 - 如果用户指定了顾客姓名（如"赵丽颖的退款"），额外提取 _customer_name 字段
 - 如果用户指定了多个退款ID（如"拒绝退款9和10"），额外提取 _refund_ids 字段（数组格式）
 - 如果用户说"全部拒绝"但没有指定具体ID，_refund_ids 设为 null"""
+            elif tool_name == "game_session_checkin":
+                extra_rules = """
+
+核销操作特殊规则:
+- 如果用户指定了顾客姓名（如"小灰灰的场次"），额外提取 _customer_name 字段
+- 如果用户指定了顾客ID，提取 customer_id 字段"""
 
             prompt = f"""根据对话上下文，提取调用工具所需的参数。
 
@@ -1344,7 +1350,7 @@ class StreamHandler:
 3. 可选参数无法确定时填 null（不要填空字符串 "" 或数字 0）
 4. 数字参数填数字（如 20），不要填字符串（如 "20"）
 5. 只返回一个 JSON 对象，不要返回任何其他文字
-{refund_rules}
+{extra_rules}
 
 对话上下文:
 {history_text}
@@ -1530,12 +1536,12 @@ Router 分析: {analysis}
             if customer_id:
                 # 查询该顾客的可用场次
                 results = execute_sql(
-                    "SELECT cs.id, pu.customer_id, c.nickname, p.name as package_name, cs.session_date "
+                    "SELECT cs.id, cs.customer_id, c.nickname, p.name as package_name, cs.session_date "
                     "FROM customer_sessions cs "
                     "JOIN purchases pu ON cs.purchase_id = pu.id "
                     "JOIN packages p ON pu.package_id = p.id "
-                    "LEFT JOIN customers c ON pu.customer_id = c.id "
-                    "WHERE pu.customer_id = :cid AND cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0",
+                    "LEFT JOIN customers c ON cs.customer_id = c.id "
+                    "WHERE cs.customer_id = :cid AND cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0",
                     {"cid": customer_id, "sid": params.get("shop_id")}
                 )
                 if not results:
@@ -1551,11 +1557,11 @@ Router 分析: {analysis}
             elif customer_name:
                 # 按顾客名查询可用场次
                 results = execute_sql(
-                    "SELECT cs.id, pu.customer_id, c.nickname, p.name as package_name, cs.session_date "
+                    "SELECT cs.id, cs.customer_id, c.nickname, p.name as package_name, cs.session_date "
                     "FROM customer_sessions cs "
                     "JOIN purchases pu ON cs.purchase_id = pu.id "
                     "JOIN packages p ON pu.package_id = p.id "
-                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "LEFT JOIN customers c ON cs.customer_id = c.id "
                     "WHERE c.nickname LIKE :name AND cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0",
                     {"name": f"%{customer_name}%", "sid": params.get("shop_id")}
                 )

@@ -250,7 +250,16 @@ async def select_action(
         else:
             # 有批量函数
             params = request.params.copy()
-            params["refund_ids" if "refund" in request.action else "ids"] = request.selected_ids
+            # 根据 action 确定批量 ID 参数名
+            if "refund" in request.action:
+                batch_param = "refund_ids"
+            elif "checkin" in request.action:
+                batch_param = "customer_session_ids"
+            elif "finish" in request.action:
+                batch_param = "game_session_ids"
+            else:
+                batch_param = "ids"
+            params[batch_param] = request.selected_ids
             params["operator_id"] = user_context.user_id
             params["token"] = token
             result = execute_func(**params)
