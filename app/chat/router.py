@@ -140,7 +140,9 @@ async def confirm_action(
         params["token"] = token
 
         # 5. 执行操作
+        logger.info(f"[Confirm] 执行 {request.action}, params={params}")
         result = execute_func(**params)
+        logger.info(f"[Confirm] {request.action} 返回: {result}")
 
         # 6. 保存执行结果到会话（持久化，重新打开面板时可反显）
         if request.session_id:
