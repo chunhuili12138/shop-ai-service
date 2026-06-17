@@ -1441,7 +1441,34 @@ Router 分析: {analysis}
             return params
 
         except Exception as e:
-            print(f"[StreamHandler:LLMExtract] LLM 提取参数失败: {str(e)}")
+            print(f"[StreamHandler:LLMExtract] 第1次提取失败: {str(e)}，重试...")
+            # 重试：更简洁的 prompt，减少干扰
+            try:
+                from app.llm import get_chat_llm as _get_llm
+                from langchain_core.messages import HumanMessage as _HM
+                retry_llm = _get_llm(temperature=0)
+                retry_prompt = f"""从用户消息中提取参数，只返回 JSON，不要其他文字。
+
+工具: {tool_name}
+用户消息: {message}
+
+返回格式（无法确定的字段填 null）:
+{{"shop_id": {self.user_context.shop_id}}}"""
+
+                retry_resp = await retry_llm.ainvoke([_HM(content=retry_prompt)])
+                retry_content = retry_resp.content.strip()
+                if "{" in retry_content:
+                    json_str = retry_content[retry_content.index("{"):retry_content.rindex("}") + 1]
+                    import json as _json
+                    params = _json.loads(json_str)
+                    params["shop_id"] = self.user_context.shop_id
+                    # 清理空值
+                    params = {k: v for k, v in params.items() if v is not None and v != "" and v != 0}
+                    print(f"[StreamHandler:LLMExtract] 重试成功: {params}")
+                    return params
+            except Exception as e2:
+                print(f"[StreamHandler:LLMExtract] 重试也失败: {str(e2)}")
+
             return {"shop_id": self.user_context.shop_id}
 
     async def _verify_and_fill_params(self, tool_name: str, params: dict) -> dict:
