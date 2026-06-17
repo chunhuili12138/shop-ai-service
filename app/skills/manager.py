@@ -52,7 +52,7 @@ class SkillManager:
                     agent="nl2sql",
                     task="查询本月顾客数据",
                     description="查询本月新顾客数和活跃顾客数",
-                    query="SELECT COUNT(DISTINCT CASE WHEN MONTH(c.created_at) = MONTH(CURDATE()) AND c.is_deleted = 0 THEN c.id END) as new_customers, COUNT(DISTINCT p.customer_id) as active_customers FROM customers c LEFT JOIN purchases p ON c.id = p.customer_id AND p.shop_id = :shop_id AND MONTH(p.created_at) = MONTH(CURDATE()) AND YEAR(p.created_at) = YEAR(CURDATE()) AND p.is_deleted = 0 WHERE c.shop_id = :shop_id AND c.is_deleted = 0",
+                    query="SELECT COUNT(DISTINCT CASE WHEN YEAR(c.created_at) = YEAR(CURDATE()) AND MONTH(c.created_at) = MONTH(CURDATE()) AND c.is_deleted = 0 THEN c.id END) as new_customers, COUNT(DISTINCT p.customer_id) as active_customers FROM customers c LEFT JOIN purchases p ON c.id = p.customer_id AND p.shop_id = :shop_id AND MONTH(p.created_at) = MONTH(CURDATE()) AND YEAR(p.created_at) = YEAR(CURDATE()) AND p.is_deleted = 0 WHERE c.shop_id = :shop_id AND c.is_deleted = 0",
                     is_critical=True,
                 ),
                 SkillStep(
@@ -242,7 +242,7 @@ class SkillManager:
                     agent="nl2sql",
                     task="查询收入数据",
                     description="查询本月收入",
-                    query="SELECT COALESCE(SUM(amount), 0) as total_revenue FROM revenue_records WHERE shop_id = :shop_id AND MONTH(created_at) = MONTH(CURDATE())",
+                    query="SELECT COALESCE(SUM(amount), 0) as total_revenue FROM revenue_records WHERE shop_id = :shop_id AND YEAR(created_at) = YEAR(CURDATE()) AND MONTH(created_at) = MONTH(CURDATE())",
                     is_critical=True,
                 ),
                 SkillStep(
@@ -250,7 +250,7 @@ class SkillManager:
                     agent="nl2sql",
                     task="查询支出数据",
                     description="查询本月支出",
-                    query="SELECT COALESCE(SUM(amount), 0) as total_expense FROM expenses WHERE shop_id = :shop_id AND MONTH(expense_date) = MONTH(CURDATE())",
+                    query="SELECT COALESCE(SUM(amount), 0) as total_expense FROM expenses WHERE shop_id = :shop_id AND YEAR(expense_date) = YEAR(CURDATE()) AND MONTH(expense_date) = MONTH(CURDATE())",
                     is_critical=True,
                 ),
                 SkillStep(
