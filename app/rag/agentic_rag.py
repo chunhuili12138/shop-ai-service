@@ -128,6 +128,7 @@ class AgenticRAG:
             documents = self._retrieve_by_intent(intent, question)
         
         # 4. CRAG：文档分级和精炼
+        crag_correct_count = 0
         if documents:
             logger.info("[Agentic RAG] CRAG文档分级...")
             crag_result = self.crag.process_documents(
@@ -136,20 +137,26 @@ class AgenticRAG:
                 retriever_func=lambda q: self._retrieve_by_intent(intent, q)
             )
             
+            # 从 document_grades 中统计 Correct 文档数
+            doc_grades = crag_result.get("document_grades", [])
+            crag_correct_count = sum(1 for g in doc_grades if g.get("grade") == "Correct")
+            logger.info(f"[Agentic RAG] CRAG分级: Correct={crag_correct_count}, total={len(doc_grades)}")
+            
             if crag_result["needs_retrieval"]:
                 logger.info(f"[Agentic RAG] CRAG触发纠正检索: {crag_result['rewritten_query']}")
-                # 使用改写后的查询重新检索
                 documents = self._retrieve_by_intent(intent, crag_result["rewritten_query"])
             elif crag_result["refined_context"]:
-                # 使用精炼后的上下文
                 refined_doc = Document(
                     page_content=crag_result["refined_context"],
                     metadata={"source": "crag_refined", "intent": intent.value}
                 )
                 documents = [refined_doc]
         
-        # 5. 计算置信度
+        # 5. 计算置信度（CRAG 有正确文档时提升置信度）
         confidence = self._calculate_confidence(documents)
+        if crag_correct_count > 0:
+            confidence = max(confidence, 0.7)
+            logger.info(f"[Agentic RAG] CRAG找到 {crag_correct_count} 个正确文档，置信度提升至 {confidence:.2f}")
         
         # 6. 获取追问次数
         clarification_count = 0
@@ -487,11 +494,20 @@ class AgenticRAG:
             return f"抱歉，处理您的问题时出现错误: {str(e)}"
 
     def _calculate_confidence(self, documents: list[Document]) -> float:
-        """计算置信度"""
+        """计算置信度（兼容多种分数键名）"""
         if not documents:
             return 0.0
-        
-        scores = [doc.metadata.get("final_score", 0) for doc in documents]
+
+        scores = []
+        for doc in documents:
+            score = (
+                doc.metadata.get("final_score")
+                or doc.metadata.get("rerank_score")
+                or doc.metadata.get("score")
+                or 0
+            )
+            scores.append(float(score))
+
         return sum(scores) / len(scores) if scores else 0.0
 
 
