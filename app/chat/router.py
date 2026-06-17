@@ -48,6 +48,7 @@ class ConfirmRequest(BaseModel):
     """确认操作请求"""
     action: str
     params: dict
+    session_id: Optional[str] = None
 
 
 # ==================== 聊天接口 ====================
@@ -133,6 +134,15 @@ async def confirm_action(
         # 5. 执行操作
         result = execute_func(**params)
 
+        # 6. 保存执行结果到会话（持久化，重新打开面板时可反显）
+        if request.session_id:
+            try:
+                from app.rag.session import get_session_manager
+                session_mgr = get_session_manager()
+                session_mgr.add_message(request.session_id, "assistant", str(result))
+            except Exception as e:
+                logger.warning(f"保存确认结果消息失败: {str(e)}")
+
         logger.info(
             f"确认操作执行成功 - user_id={user_context.user_id}, "
             f"action={request.action}"
@@ -140,9 +150,25 @@ async def confirm_action(
         return {"success": True, "message": result}
 
     except HTTPException:
+        # 保存错误消息到会话
+        if request.session_id:
+            try:
+                from app.rag.session import get_session_manager
+                session_mgr = get_session_manager()
+                session_mgr.add_message(request.session_id, "assistant", f"操作失败: {HTTPException.detail}")
+            except Exception:
+                pass
         raise
     except Exception as e:
         logger.error(f"操作失败: {str(e)}", exc_info=True)
+        # 保存错误消息到会话
+        if request.session_id:
+            try:
+                from app.rag.session import get_session_manager
+                session_mgr = get_session_manager()
+                session_mgr.add_message(request.session_id, "assistant", f"操作失败: {str(e)}")
+            except Exception:
+                pass
         raise HTTPException(status_code=500, detail=f"操作失败: {str(e)}")
 
 

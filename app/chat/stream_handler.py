@@ -832,9 +832,19 @@ class StreamHandler:
                     if step_result and step_result.get("fallback"):
                         print(f"[StreamHandler] {tool} 参数不完整，fallback 到 AgentLoop")
                         step_result = await self._execute_step_tool(step_context, message)
-                    # 确认框类型：直接发 SSE confirm 事件，结束流程等待用户操作
+                    # 确认框类型：保存确认框消息到 session，再发 SSE confirm 事件
                     elif step_result and step_result.get("confirm_data"):
-                        yield self._format_sse("confirm", step_result["confirm_data"], "确认操作")
+                        confirm_data = step_result["confirm_data"]
+                        # 保存确认框消息到 session（持久化）
+                        if self.session_id:
+                            try:
+                                from app.rag.session import get_session_manager
+                                session_mgr = get_session_manager()
+                                confirm_text = f"【确认操作】{confirm_data.get('title', '')}\n{confirm_data.get('message', '')}"
+                                session_mgr.add_message(self.session_id, "assistant", confirm_text)
+                            except Exception as e:
+                                print(f"[StreamHandler] 保存确认框消息失败: {str(e)}")
+                        yield self._format_sse("confirm", confirm_data, "确认操作")
                         return
                 else:
 
