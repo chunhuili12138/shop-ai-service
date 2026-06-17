@@ -252,7 +252,27 @@ async def select_action(
                     results.append({"id": item_id, "success": False, "message": str(e)})
 
             success_count = sum(1 for r in results if r["success"])
-            summary = f"操作完成：成功 {success_count}/{len(request.selected_ids)} 条"
+
+            # 构建详细结果文本
+            display_names = {
+                "refund_reject": "退款拒绝",
+                "refund_approve": "退款批准",
+                "game_session_checkin": "核销入座",
+                "game_session_finish": "结束游玩",
+                "material_inbound": "物料入库",
+                "material_outbound": "物料出库",
+                "grant_coupon": "发放优惠券",
+                "reply_feedback": "回复评价",
+                "send_notification": "发送通知",
+            }
+            display_name = display_names.get(request.action, request.action)
+            detail_lines = [f"{display_name}操作完成："]
+            for r in results:
+                status = "✓" if r["success"] else "✗"
+                msg = r.get("message", "")
+                detail_lines.append(f"- [ID:{r['id']}] {status} {msg}")
+            detail_lines.append(f"\n成功 {success_count}/{len(request.selected_ids)} 条")
+            summary = "\n".join(detail_lines)
         else:
             # 有批量函数
             params = request.params.copy()

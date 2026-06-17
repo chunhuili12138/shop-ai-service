@@ -8,6 +8,19 @@ import asyncio
 import time
 from typing import AsyncGenerator, Dict, Any
 from app.common.user_context import UserContext
+
+# 工具中文名映射（用于前端展示和 session 存储）
+TOOL_DISPLAY_NAMES = {
+    "refund_reject": "退款拒绝",
+    "refund_approve": "退款批准",
+    "game_session_checkin": "核销入座",
+    "game_session_finish": "结束游玩",
+    "material_inbound": "物料入库",
+    "material_outbound": "物料出库",
+    "grant_coupon": "发放优惠券",
+    "reply_feedback": "回复评价",
+    "send_notification": "发送通知",
+}
 from app.multi_agent.router import get_task_router
 from app.multi_agent.supervisor import get_supervisor_agent
 from monitoring.langfuse_config import create_trace, create_span
@@ -849,12 +862,34 @@ class StreamHandler:
                     # 多选列表类型：保存选择列表消息到 session，再发 SSE select 事件
                     elif step_result and step_result.get("select_data"):
                         select_data = step_result["select_data"]
-                        # 保存选择列表消息到 session（持久化）
+                        # 保存选择列表消息到 session（持久化，含完整信息）
                         if self.session_id:
                             try:
                                 from app.rag.session import get_session_manager
                                 session_mgr = get_session_manager()
-                                select_text = f"【多选操作】{select_data.get('title', '')}\n找到 {len(select_data.get('items', []))} 条记录"
+                                tool_name = select_data.get("tool_name", "")
+                                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                                items = select_data.get("items", [])
+                                # 构建完整的存储文本
+                                lines = [f"【{display_name}】找到 {len(items)} 条记录："]
+                                for idx, item in enumerate(items, 1):
+                                    name = item.get("nickname") or item.get("customer_name") or "未知"
+                                    pkg = item.get("package_name") or ""
+                                    amount = item.get("refund_amount") or item.get("amount") or ""
+                                    reason = item.get("reason") or ""
+                                    parts = [name]
+                                    if pkg:
+                                        parts.append(pkg)
+                                    if amount:
+                                        parts.append(f"¥{amount}")
+                                    if reason:
+                                        parts.append(reason)
+                                    lines.append(f"{idx}. {' - '.join(parts)}")
+                                fields = select_data.get("fields", [])
+                                if fields:
+                                    field_names = [f.get("label", f.get("name", "")) for f in fields]
+                                    lines.append(f"\n请填写：{', '.join(field_names)}")
+                                select_text = "\n".join(lines)
                                 session_mgr.add_message(self.session_id, "assistant", select_text)
                             except Exception as e:
                                 print(f"[StreamHandler] 保存选择列表消息失败: {str(e)}")
@@ -1649,16 +1684,17 @@ Router 分析: {analysis}
                 if pending and params.get("_multi_select"):
                     # 多条匹配，返回 select 类型让前端渲染选择列表
                     # 根据 tool_name 动态生成 fields 和标题
+                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
                     select_fields = []
-                    select_title = f"选择要操作的{tool_name.replace('_', ' ')}"
+                    select_title = f"{display_name} - 选择要操作的记录"
                     if "refund_reject" in tool_name:
                         select_fields = [{"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝理由"}]
                     elif "refund_approve" in tool_name:
                         select_fields = [{"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注"}]
                     elif "checkin" in tool_name:
-                        select_title = "选择要核销的场次"
+                        select_title = f"{display_name} - 选择要核销的场次"
                     elif "finish" in tool_name:
-                        select_title = "选择要结束的场次"
+                        select_title = f"{display_name} - 选择要结束的场次"
 
                     return {
                         "success": True,
