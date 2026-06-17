@@ -86,6 +86,20 @@ def sync_schema_job():
         logger.error(f"Schema 同步失败: {str(e)}")
 
 
+def rebuild_knowledge_index_job():
+    """重建知识库索引（每天凌晨4点）"""
+    logger.info("执行知识库索引重建...")
+    try:
+        from app.rag.vectorstore import rebuild_index
+        from app.rag.bm25_retriever import reload_bm25_index
+
+        rebuild_index()
+        reload_bm25_index()
+        logger.info("知识库索引重建完成")
+    except Exception as e:
+        logger.error(f"知识库索引重建失败: {str(e)}")
+
+
 def start_scheduler():
     """
     启动定时任务调度器
@@ -97,8 +111,9 @@ def start_scheduler():
     schedule.every(1).hours.do(sync_packages_job)
     schedule.every().day.at("02:00").do(sync_all_knowledge_job)
     schedule.every().day.at("03:00").do(sync_schema_job)
+    schedule.every().day.at("04:00").do(rebuild_knowledge_index_job)
 
-    logger.info("定时任务已启动：每小时同步套餐，每天凌晨2点同步知识库，每天凌晨3点同步Schema")
+    logger.info("定时任务已启动：每小时同步套餐，每天凌晨2点同步知识库，3点同步Schema，4点重建索引")
 
     def run_scheduler():
         while True:

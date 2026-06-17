@@ -76,6 +76,15 @@ class KnowledgeSync:
             # 同步通用问题 → general目录
             results["general"] = self.sync_general(shop_id)
             
+            # 同步完成后重建索引（确保 ChromaDB + BM25 与文件同步）
+            try:
+                from app.rag.vectorstore import rebuild_index
+                from app.rag.bm25_retriever import reload_bm25_index
+                rebuild_index()
+                reload_bm25_index()
+            except Exception as idx_err:
+                print(f"[知识库同步] 索引重建失败: {str(idx_err)}")
+            
             print(f"[知识库同步] 完成: {results}")
             return results
         except Exception as e:

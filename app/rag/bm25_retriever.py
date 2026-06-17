@@ -143,5 +143,31 @@ def get_bm25_retriever() -> BM25Retriever:
         documents, metadatas = load_documents_from_dir("data/knowledge")
         if documents:
             _bm25_retriever.build_index(documents, metadatas)
-    
+
     return _bm25_retriever
+
+
+def reload_bm25_index():
+    """
+    重新加载 BM25 索引（用于知识库更新后）
+
+    从 data/knowledge/ 重新读取所有文档并重建索引
+    """
+    global _bm25_retriever
+
+    import logging
+    logger = logging.getLogger(__name__)
+
+    try:
+        documents, metadatas = load_documents_from_dir("data/knowledge")
+        if not documents:
+            logger.warning("[BM25] 没有找到文档，跳过重建")
+            return False
+
+        _bm25_retriever = BM25Retriever()
+        _bm25_retriever.build_index(documents, metadatas)
+        logger.info(f"[BM25] 索引重建完成: {len(documents)} 个文档")
+        return True
+    except Exception as e:
+        logger.error(f"[BM25] 索引重建失败: {str(e)}")
+        return False
