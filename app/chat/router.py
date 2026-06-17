@@ -212,13 +212,33 @@ async def select_action(
                 raise HTTPException(status_code=400, detail=f"未知的操作类型: {request.action}")
 
             # 根据 action 确定 ID 参数名
-            id_param = "refund_id" if "refund" in request.action else "id"
+            if "refund" in request.action:
+                id_param = "refund_id"
+            elif "checkin" in request.action:
+                id_param = "customer_session_id"
+            elif "finish" in request.action:
+                id_param = "game_session_id"
+            else:
+                id_param = "id"
 
             for item_id in request.selected_ids:
                 params = request.params.copy()
                 params[id_param] = item_id
                 params["operator_id"] = user_context.user_id
                 params["token"] = token
+
+                # 核销需要 customer_id，从数据库查询
+                if "checkin" in request.action and "customer_id" not in params:
+                    from app.nl2sql.executor import execute_sql
+                    cs = execute_sql(
+                        "SELECT pu.customer_id FROM customer_sessions cs "
+                        "JOIN purchases pu ON cs.purchase_id = pu.id "
+                        "WHERE cs.id = :id AND cs.shop_id = :sid",
+                        {"id": item_id, "sid": shop_id}
+                    )
+                    if cs:
+                        params["customer_id"] = cs[0]["customer_id"]
+
                 try:
                     result = single_func(**params)
                     results.append({"id": item_id, "success": True, "message": result})

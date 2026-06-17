@@ -1522,6 +1522,79 @@ Router 分析: {analysis}
                     params["_verified"] = False
                     params["_pending_refunds"] = results
                     params["_multi_select"] = True
+
+        elif tool_name == "game_session_checkin":
+            customer_id = params.get("customer_id")
+            customer_name = params.get("_customer_name")
+
+            if customer_id:
+                # 查询该顾客的可用场次
+                results = execute_sql(
+                    "SELECT cs.id, pu.customer_id, c.nickname, p.name as package_name, cs.session_date "
+                    "FROM customer_sessions cs "
+                    "JOIN purchases pu ON cs.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE pu.customer_id = :cid AND cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0",
+                    {"cid": customer_id, "sid": params.get("shop_id")}
+                )
+                if not results:
+                    params["_verified"] = False
+                    params["_error"] = "该顾客没有可用的场次"
+                elif len(results) == 1:
+                    params["customer_session_id"] = results[0]["id"]
+                    params["_verified"] = True
+                else:
+                    params["_verified"] = False
+                    params["_pending_items"] = results
+                    params["_multi_select"] = True
+            elif customer_name:
+                # 按顾客名查询可用场次
+                results = execute_sql(
+                    "SELECT cs.id, pu.customer_id, c.nickname, p.name as package_name, cs.session_date "
+                    "FROM customer_sessions cs "
+                    "JOIN purchases pu ON cs.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE c.nickname LIKE :name AND cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0",
+                    {"name": f"%{customer_name}%", "sid": params.get("shop_id")}
+                )
+                if not results:
+                    params["_verified"] = False
+                    params["_error"] = f"没有找到 {customer_name} 的可用场次"
+                elif len(results) == 1:
+                    params["customer_session_id"] = results[0]["id"]
+                    params["_verified"] = True
+                else:
+                    params["_verified"] = False
+                    params["_pending_items"] = results
+                    params["_multi_select"] = True
+            else:
+                params["_verified"] = True
+
+        elif tool_name == "game_session_finish":
+            # 查询所有进行中的场次
+            results = execute_sql(
+                "SELECT gs.id, c.nickname, p.name as package_name, gs.start_time "
+                "FROM game_sessions gs "
+                "LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id "
+                "LEFT JOIN purchases pu ON cs.purchase_id = pu.id "
+                "LEFT JOIN packages p ON pu.package_id = p.id "
+                "LEFT JOIN customers c ON pu.customer_id = c.id "
+                "WHERE gs.shop_id = :sid AND gs.status = 1 AND (gs.is_deleted = 0 OR gs.is_deleted IS NULL)",
+                {"sid": params.get("shop_id")}
+            )
+            if not results:
+                params["_verified"] = False
+                params["_error"] = "当前没有进行中的场次"
+            elif len(results) == 1:
+                params["game_session_id"] = results[0]["id"]
+                params["_verified"] = True
+            else:
+                params["_verified"] = False
+                params["_pending_items"] = results
+                params["_multi_select"] = True
+
         else:
             params["_verified"] = True
 
@@ -1558,22 +1631,27 @@ Router 分析: {analysis}
             # Step 3: 检查验证结果
             if not params.get("_verified"):
                 error = params.get("_error", "参数验证失败")
-                pending = params.get("_pending_refunds")
+                pending = params.get("_pending_refunds") or params.get("_pending_items")
                 if pending and params.get("_multi_select"):
                     # 多条匹配，返回 select 类型让前端渲染选择列表
-                    # 根据 tool_name 动态生成 fields
+                    # 根据 tool_name 动态生成 fields 和标题
                     select_fields = []
+                    select_title = f"选择要操作的{tool_name.replace('_', ' ')}"
                     if "refund_reject" in tool_name:
                         select_fields = [{"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝理由"}]
                     elif "refund_approve" in tool_name:
                         select_fields = [{"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注"}]
+                    elif "checkin" in tool_name:
+                        select_title = "选择要核销的场次"
+                    elif "finish" in tool_name:
+                        select_title = "选择要结束的场次"
 
                     return {
                         "success": True,
                         "result": "",
                         "select_data": {
                             "tool_name": tool_name,
-                            "title": f"选择要操作的{tool_name.replace('_', ' ')}",
+                            "title": select_title,
                             "message": f"找到 {len(pending)} 条匹配记录，请选择：",
                             "items": pending,
                             "fields": select_fields,
