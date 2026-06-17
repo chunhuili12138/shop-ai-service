@@ -226,6 +226,7 @@ async def select_action(
                 params[id_param] = item_id
                 params["operator_id"] = user_context.user_id
                 params["token"] = token
+                params["shop_id"] = shop_id
 
                 # 核销需要 customer_id，从数据库查询
                 if "checkin" in request.action and "customer_id" not in params:
@@ -262,6 +263,7 @@ async def select_action(
             params[batch_param] = request.selected_ids
             params["operator_id"] = user_context.user_id
             params["token"] = token
+            params["shop_id"] = shop_id
             result = execute_func(**params)
             summary = str(result)
 
