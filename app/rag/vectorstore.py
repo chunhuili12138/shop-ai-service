@@ -14,16 +14,28 @@ logger = logging.getLogger(__name__)
 
 
 def get_vectorstore() -> VectorStore:
-    """获取向量库实例"""
+    """获取向量库实例（带 HNSW 参数优化）"""
     embeddings = get_embeddings()
 
     if settings.VECTOR_STORE_TYPE == "chroma":
-        return Chroma(
+        vs = Chroma(
             collection_name=settings.CHROMA_COLLECTION_NAME,
             embedding_function=embeddings,
             persist_directory=settings.CHROMA_PERSIST_DIR,
             client_settings=chroma_settings,
         )
+        # 设置 HNSW 参数（解决 "ef or M is too small" 错误）
+        try:
+            collection = vs._collection
+            collection.modify(metadata={
+                "hnsw:space": "cosine",
+                "hnsw:M": 32,
+                "hnsw:construction_ef": 200,
+                "hnsw:search_ef": 100,
+            })
+        except Exception:
+            pass  # 首次创建时可能失败，不影响使用
+        return vs
     else:
         raise ValueError(f"不支持的向量库类型: {settings.VECTOR_STORE_TYPE}")
 
