@@ -51,6 +51,14 @@ class ConfirmRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+class SelectRequest(BaseModel):
+    """多选确认请求"""
+    action: str
+    selected_ids: list
+    params: dict
+    session_id: Optional[str] = None
+
+
 # ==================== 聊天接口 ====================
 
 @router.post("/stream")
@@ -169,6 +177,74 @@ async def confirm_action(
                 session_mgr.add_message(request.session_id, "assistant", f"操作失败: {str(e)}")
             except Exception:
                 pass
+        raise HTTPException(status_code=500, detail=f"操作失败: {str(e)}")
+
+
+@router.post("/select")
+async def select_action(
+    request: SelectRequest,
+    authorization: str = Header(...)
+):
+    """
+    多选确认接口
+
+    用于处理多条记录的批量操作（如批量拒绝退款）
+    """
+    try:
+        # 1. 验证 Token
+        token, shop_id = parse_authorization(authorization)
+        user_context = await verify_token(token, shop_id)
+
+        # 2. 获取批量执行函数
+        batch_action = f"{request.action}_batch"
+        from app.tools import EXECUTE_FUNCTIONS
+        execute_func = EXECUTE_FUNCTIONS.get(batch_action)
+
+        if not execute_func:
+            # 没有批量函数，逐个执行
+            results = []
+            single_func = EXECUTE_FUNCTIONS.get(request.action)
+            if not single_func:
+                raise HTTPException(status_code=400, detail=f"未知的操作类型: {request.action}")
+
+            for item_id in request.selected_ids:
+                params = request.params.copy()
+                params["refund_id" if "refund" in request.action else "id"] = item_id
+                params["operator_id"] = user_context.user_id
+                params["token"] = token
+                try:
+                    result = single_func(**params)
+                    results.append({"id": item_id, "success": True, "message": result})
+                except Exception as e:
+                    results.append({"id": item_id, "success": False, "message": str(e)})
+
+            success_count = sum(1 for r in results if r["success"])
+            summary = f"操作完成：成功 {success_count}/{len(request.selected_ids)} 条"
+        else:
+            # 有批量函数
+            params = request.params.copy()
+            params["refund_ids" if "refund" in request.action else "ids"] = request.selected_ids
+            params["operator_id"] = user_context.user_id
+            params["token"] = token
+            result = execute_func(**params)
+            summary = str(result)
+
+        # 保存结果到会话
+        if request.session_id:
+            try:
+                from app.rag.session import get_session_manager
+                session_mgr = get_session_manager()
+                session_mgr.add_message(request.session_id, "assistant", summary)
+            except Exception as e:
+                logger.warning(f"保存多选结果消息失败: {str(e)}")
+
+        logger.info(f"多选操作执行成功 - user_id={user_context.user_id}, action={request.action}, count={len(request.selected_ids)}")
+        return {"success": True, "message": summary}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"多选操作失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"操作失败: {str(e)}")
 
 

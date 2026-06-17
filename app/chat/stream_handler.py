@@ -846,6 +846,20 @@ class StreamHandler:
                                 print(f"[StreamHandler] 保存确认框消息失败: {str(e)}")
                         yield self._format_sse("confirm", confirm_data, "确认操作")
                         return
+                    # 多选列表类型：保存选择列表消息到 session，再发 SSE select 事件
+                    elif step_result and step_result.get("select_data"):
+                        select_data = step_result["select_data"]
+                        # 保存选择列表消息到 session（持久化）
+                        if self.session_id:
+                            try:
+                                from app.rag.session import get_session_manager
+                                session_mgr = get_session_manager()
+                                select_text = f"【多选操作】{select_data.get('title', '')}\n找到 {len(select_data.get('items', []))} 条记录"
+                                session_mgr.add_message(self.session_id, "assistant", select_text)
+                            except Exception as e:
+                                print(f"[StreamHandler] 保存选择列表消息失败: {str(e)}")
+                        yield self._format_sse("select", select_data, "多选操作")
+                        return
                 else:
 
                     # 未知 tool 类型：打回 Router 重新生成
@@ -1321,6 +1335,11 @@ class StreamHandler:
 4. 数字参数填数字（如 20），不要填字符串（如 "20"）
 5. 只返回一个 JSON 对象，不要返回任何其他文字
 
+退款操作特殊规则:
+- 如果用户指定了顾客姓名（如"赵丽颖的退款"），额外提取 _customer_name 字段
+- 如果用户指定了多个退款ID（如"拒绝退款9和10"），额外提取 _refund_ids 字段（数组格式）
+- 如果用户说"全部拒绝"但没有指定具体ID，_refund_ids 设为 null
+
 对话上下文:
 {history_text}
 
@@ -1399,14 +1418,41 @@ Router 分析: {analysis}
             params: LLM 提取的参数
 
         Returns:
-            验证后的参数（含 _verified, _customer_name 等内部字段）
+            验证后的参数（含 _verified, _customer_name, _pending_refunds 等内部字段）
         """
         from app.nl2sql.executor import execute_sql
 
         if tool_name in ("refund_approve", "refund_reject"):
             refund_id = params.get("refund_id")
-            if refund_id and refund_id != 0:
-                # 验证 refund_id 是否存在且待处理
+            customer_name = params.get("_customer_name")
+            refund_ids = params.get("_refund_ids")  # 列表
+
+            if refund_ids and isinstance(refund_ids, list) and len(refund_ids) > 0:
+                # 用户指定了多个ID
+                placeholders = ", ".join([str(int(rid)) for rid in refund_ids])
+                results = execute_sql(
+                    f"SELECT rr.id, rr.refund_amount, c.nickname, rr.reason, rr.status "
+                    f"FROM refund_records rr "
+                    f"JOIN purchases pu ON rr.purchase_id = pu.id "
+                    f"LEFT JOIN customers c ON pu.customer_id = c.id "
+                    f"WHERE rr.id IN ({placeholders}) AND pu.shop_id = :sid AND rr.is_deleted = 0",
+                    {"sid": params.get("shop_id")}
+                )
+                pending = [r for r in results if r.get("status") == 1]
+                if not pending:
+                    params["_verified"] = False
+                    params["_error"] = "指定的退款记录不存在或不是待审核状态"
+                elif len(pending) == 1:
+                    params["refund_id"] = pending[0]["id"]
+                    params["_verified"] = True
+                    params["_customer_name"] = pending[0].get("nickname", "")
+                else:
+                    params["_verified"] = False
+                    params["_pending_refunds"] = pending
+                    params["_multi_select"] = True
+
+            elif refund_id and refund_id != 0:
+                # 用户指定了单个ID
                 result = execute_sql(
                     "SELECT rr.id, rr.status, c.nickname FROM refund_records rr "
                     "JOIN purchases pu ON rr.purchase_id = pu.id "
@@ -1425,8 +1471,32 @@ Router 分析: {analysis}
                 else:
                     params["_verified"] = False
                     params["_error"] = f"退款记录 {refund_id} 不存在"
+
+            elif customer_name:
+                # 用户指定了顾客名，查询该顾客的待处理退款
+                results = execute_sql(
+                    "SELECT rr.id, rr.refund_amount, c.nickname, rr.reason "
+                    "FROM refund_records rr "
+                    "JOIN purchases pu ON rr.purchase_id = pu.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE pu.shop_id = :sid AND rr.status = 1 AND rr.is_deleted = 0 "
+                    "AND c.nickname LIKE :name",
+                    {"sid": params.get("shop_id"), "name": f"%{customer_name}%"}
+                )
+                if not results:
+                    params["_verified"] = False
+                    params["_error"] = f"没有找到 {customer_name} 的待处理退款"
+                elif len(results) == 1:
+                    params["refund_id"] = results[0]["id"]
+                    params["_verified"] = True
+                    params["_customer_name"] = results[0].get("nickname", "")
+                else:
+                    params["_verified"] = False
+                    params["_pending_refunds"] = results
+                    params["_multi_select"] = True
+
             else:
-                # refund_id 为空，查询待处理退款
+                # 什么都没指定，查全部待处理退款
                 results = execute_sql(
                     "SELECT rr.id, rr.refund_amount, c.nickname, rr.reason "
                     "FROM refund_records rr "
@@ -1443,12 +1513,10 @@ Router 分析: {analysis}
                     params["_verified"] = True
                     params["_customer_name"] = results[0].get("nickname", "")
                 else:
-                    # 多条待处理退款，需要用户选择
                     params["_verified"] = False
                     params["_pending_refunds"] = results
-                    params["_error"] = f"有 {len(results)} 条待处理退款，请选择"
+                    params["_multi_select"] = True
         else:
-            # 其他工具默认验证通过
             params["_verified"] = True
 
         return params
@@ -1485,8 +1553,26 @@ Router 分析: {analysis}
             if not params.get("_verified"):
                 error = params.get("_error", "参数验证失败")
                 pending = params.get("_pending_refunds")
-                if pending:
-                    # 多条待处理退款，发送列表让用户选择
+                if pending and params.get("_multi_select"):
+                    # 多条匹配，返回 select 类型让前端渲染选择列表
+                    return {
+                        "success": True,
+                        "result": "",
+                        "select_data": {
+                            "tool_name": tool_name,
+                            "title": f"选择要操作的{tool_name.replace('_', ' ')}",
+                            "message": f"找到 {len(pending)} 条匹配记录，请选择：",
+                            "items": pending,
+                            "fields": [{"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝理由"}],
+                            "buttons": [
+                                {"type": "confirm", "label": "确认操作选中项"},
+                                {"type": "cancel", "label": "取消"},
+                            ],
+                            "action": tool_name,
+                        },
+                        "error": "",
+                    }
+                elif pending:
                     return {"success": False, "result": "", "error": error, "pending_refunds": pending}
                 return {"success": False, "result": "", "error": error}
 
