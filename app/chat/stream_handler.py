@@ -794,30 +794,25 @@ class StreamHandler:
 
             step_start = time.time()
 
+            # tool 为空时直接用 LLM 回答（不支持的操作等场景）
+            if not tool or tool.strip() == "":
+                print(f"[StreamHandler] 工具为空，直接用 LLM 回答")
+                step_result = await self._execute_step_llm(step_context, message, history_context)
 
-
-            if tool == "nl2sql":
-
+            elif tool == "nl2sql":
                 print(f"[StreamHandler] 调用 NL2SQL Agent...")
-
                 step_result = await self._execute_step_nl2sql(step_context, message)
 
             elif tool == "rag":
-
                 print(f"[StreamHandler] 调用 RAG Agent...")
-
                 step_result = await self._execute_step_rag(step_context, message, history_context, original_question=original_message or message)
 
             elif tool == "llm":
-
                 print(f"[StreamHandler] 调用 LLM Agent...")
-
                 step_result = await self._execute_step_llm(step_context, message, history_context)
 
             elif tool == "tool":
-
                 print(f"[StreamHandler] 调用 Tool Agent...")
-
                 step_result = await self._execute_step_tool(step_context, message)
 
             else:
