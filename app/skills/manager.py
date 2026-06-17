@@ -52,7 +52,7 @@ class SkillManager:
                     agent="nl2sql",
                     task="查询本月顾客数据",
                     description="查询本月新顾客数和活跃顾客数",
-                    query="SELECT COUNT(DISTINCT CASE WHEN MONTH(c.created_at) = MONTH(CURDATE()) THEN c.id END) as new_customers, COUNT(DISTINCT p.customer_id) as active_customers FROM customers c LEFT JOIN purchases p ON c.id = p.customer_id AND p.shop_id = :shop_id AND MONTH(p.created_at) = MONTH(CURDATE()) AND YEAR(p.created_at) = YEAR(CURDATE()) WHERE c.shop_id = :shop_id",
+                    query="SELECT COUNT(DISTINCT CASE WHEN MONTH(c.created_at) = MONTH(CURDATE()) AND c.is_deleted = 0 THEN c.id END) as new_customers, COUNT(DISTINCT p.customer_id) as active_customers FROM customers c LEFT JOIN purchases p ON c.id = p.customer_id AND p.shop_id = :shop_id AND MONTH(p.created_at) = MONTH(CURDATE()) AND YEAR(p.created_at) = YEAR(CURDATE()) AND p.is_deleted = 0 WHERE c.shop_id = :shop_id AND c.is_deleted = 0",
                     is_critical=True,
                 ),
                 SkillStep(
