@@ -223,6 +223,53 @@ async def select_action(
             else:
                 id_param = "id"
 
+            # 执行前：查询选中项的详情（用于构建完整结果文本）
+            from app.nl2sql.executor import execute_sql
+            item_details = {}
+            try:
+                if "refund" in request.action:
+                    placeholders = ", ".join([str(int(i)) for i in request.selected_ids])
+                    details = execute_sql(
+                        f"SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount "
+                        f"FROM refund_records rr "
+                        f"JOIN purchases pu ON rr.purchase_id = pu.id "
+                        f"JOIN packages p ON pu.package_id = p.id "
+                        f"LEFT JOIN customers c ON pu.customer_id = c.id "
+                        f"WHERE rr.id IN ({placeholders}) AND pu.shop_id = :sid",
+                        {"sid": shop_id}
+                    )
+                    for d in details:
+                        item_details[d["id"]] = d
+                elif "checkin" in request.action:
+                    placeholders = ", ".join([str(int(i)) for i in request.selected_ids])
+                    details = execute_sql(
+                        f"SELECT cs.id, c.nickname, p.name as package_name "
+                        f"FROM customer_sessions cs "
+                        f"JOIN purchases pu ON cs.purchase_id = pu.id "
+                        f"JOIN packages p ON pu.package_id = p.id "
+                        f"LEFT JOIN customers c ON pu.customer_id = c.id "
+                        f"WHERE cs.id IN ({placeholders}) AND cs.shop_id = :sid",
+                        {"sid": shop_id}
+                    )
+                    for d in details:
+                        item_details[d["id"]] = d
+                elif "finish" in request.action:
+                    placeholders = ", ".join([str(int(i)) for i in request.selected_ids])
+                    details = execute_sql(
+                        f"SELECT gs.id, c.nickname, p.name as package_name "
+                        f"FROM game_sessions gs "
+                        f"LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id "
+                        f"LEFT JOIN purchases pu ON cs.purchase_id = pu.id "
+                        f"JOIN packages p ON pu.package_id = p.id "
+                        f"LEFT JOIN customers c ON pu.customer_id = c.id "
+                        f"WHERE gs.id IN ({placeholders}) AND gs.shop_id = :sid",
+                        {"sid": shop_id}
+                    )
+                    for d in details:
+                        item_details[d["id"]] = d
+            except Exception as e:
+                logger.warning(f"[Select] 查询选中项详情失败: {str(e)}")
+
             for item_id in request.selected_ids:
                 params = request.params.copy()
                 params[id_param] = item_id
@@ -253,14 +300,33 @@ async def select_action(
 
             success_count = sum(1 for r in results if r["success"])
 
-            # 构建详细结果文本
+            # 构建详细结果文本（使用查询到的详情）
             from app.tools import TOOL_DISPLAY_NAMES
             display_name = TOOL_DISPLAY_NAMES.get(request.action, request.action)
             detail_lines = [f"{display_name}操作完成："]
             for r in results:
-                status = "✓" if r["success"] else "✗"
-                msg = r.get("message", "")
-                detail_lines.append(f"- [ID:{r['id']}] {status} {msg}")
+                detail = item_details.get(r["id"], {})
+                name = detail.get("nickname", "")
+                pkg = detail.get("package_name", "")
+                amount = detail.get("refund_amount")
+
+                # 构建描述
+                desc_parts = []
+                if name:
+                    desc_parts.append(name)
+                if pkg:
+                    desc_parts.append(pkg)
+                if amount:
+                    desc_parts.append(f"¥{amount}")
+                desc = "（".join(desc_parts) + "）" if desc_parts else f"[ID:{r['id']}]"
+
+                if r["success"]:
+                    msg = r.get("message", "操作成功")
+                    detail_lines.append(f"- {desc}：{msg}")
+                else:
+                    msg = r.get("message", "操作失败")
+                    detail_lines.append(f"- {desc}：{msg}")
+
             detail_lines.append(f"\n成功 {success_count}/{len(request.selected_ids)} 条")
             summary = "\n".join(detail_lines)
         else:
