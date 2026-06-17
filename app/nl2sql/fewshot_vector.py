@@ -47,7 +47,7 @@ DEFAULT_FEW_SHOT_EXAMPLES = [
     # 顾客查询
     FewShotExample(
         question="本月新顾客数量",
-        sql="SELECT COUNT(*) as new_customers FROM customers WHERE shop_id = :shop_id AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW())",
+        sql="SELECT COUNT(*) as new_customers FROM customers WHERE shop_id = :shop_id AND MONTH(created_at) = MONTH(NOW()) AND YEAR(created_at) = YEAR(NOW()) AND is_deleted = 0",
         category="customer",
         difficulty=1
     ),
