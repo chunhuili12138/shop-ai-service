@@ -8,19 +8,7 @@ import asyncio
 import time
 from typing import AsyncGenerator, Dict, Any
 from app.common.user_context import UserContext
-
-# 工具中文名映射（用于前端展示和 session 存储）
-TOOL_DISPLAY_NAMES = {
-    "refund_reject": "退款拒绝",
-    "refund_approve": "退款批准",
-    "game_session_checkin": "核销入座",
-    "game_session_finish": "结束游玩",
-    "material_inbound": "物料入库",
-    "material_outbound": "物料出库",
-    "grant_coupon": "发放优惠券",
-    "reply_feedback": "回复评价",
-    "send_notification": "发送通知",
-}
+from app.tools import TOOL_DISPLAY_NAMES
 from app.multi_agent.router import get_task_router
 from app.multi_agent.supervisor import get_supervisor_agent
 from monitoring.langfuse_config import create_trace, create_span

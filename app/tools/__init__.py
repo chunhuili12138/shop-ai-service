@@ -136,6 +136,19 @@ from app.tools.prompt_templates import (
     get_default_prompt,
 )
 
+# 工具中文名映射（用于前端展示、session 存储、日志等）
+TOOL_DISPLAY_NAMES = {
+    "refund_reject": "退款拒绝",
+    "refund_approve": "退款批准",
+    "game_session_checkin": "核销入座",
+    "game_session_finish": "结束游玩",
+    "material_inbound": "物料入库",
+    "material_outbound": "物料出库",
+    "grant_coupon": "发放优惠券",
+    "reply_feedback": "回复评价",
+    "send_notification": "发送通知",
+}
+
 __all__ = [
     # 工具相关
     "TOOLS",
