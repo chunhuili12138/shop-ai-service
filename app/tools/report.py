@@ -269,6 +269,7 @@ def export_report(
         WHERE shop_id = :shop_id
         AND created_at >= :start_date
         AND created_at <= :end_date
+        AND (is_deleted = 0 OR is_deleted IS NULL)
     """
     new_customers = execute_sql(new_customers_sql, {
         "shop_id": shop_id,
