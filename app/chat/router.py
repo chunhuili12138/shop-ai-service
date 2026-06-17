@@ -21,6 +21,170 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# ==================== 辅助函数 ====================
+
+def query_operated_record_details(action: str, params: dict, shop_id: int) -> dict:
+    """
+    根据操作类型查询被操作记录的关键信息
+
+    Args:
+        action: 操作类型（如 refund_reject, game_session_checkin 等）
+        params: 操作参数（包含各种 ID）
+        shop_id: 店铺 ID
+
+    Returns:
+        查询到的详情字典，查询失败返回空字典
+    """
+    from app.nl2sql.executor import execute_sql
+
+    try:
+        if "refund" in action:
+            refund_id = params.get("refund_id")
+            if refund_id:
+                results = execute_sql(
+                    "SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount "
+                    "FROM refund_records rr "
+                    "JOIN purchases pu ON rr.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE rr.id = :id AND pu.shop_id = :sid",
+                    {"id": refund_id, "sid": shop_id}
+                )
+                return results[0] if results else {}
+
+        elif "checkin" in action:
+            cs_id = params.get("customer_session_id")
+            if cs_id:
+                results = execute_sql(
+                    "SELECT cs.id, c.nickname, p.name as package_name "
+                    "FROM customer_sessions cs "
+                    "JOIN purchases pu ON cs.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE cs.id = :id AND cs.shop_id = :sid",
+                    {"id": cs_id, "sid": shop_id}
+                )
+                return results[0] if results else {}
+
+        elif "finish" in action:
+            gs_id = params.get("game_session_id")
+            if gs_id:
+                results = execute_sql(
+                    "SELECT gs.id, c.nickname, p.name as package_name "
+                    "FROM game_sessions gs "
+                    "LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id "
+                    "LEFT JOIN purchases pu ON cs.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "LEFT JOIN customers c ON pu.customer_id = c.id "
+                    "WHERE gs.id = :id AND gs.shop_id = :sid",
+                    {"id": gs_id, "sid": shop_id}
+                )
+                return results[0] if results else {}
+
+        elif "material_inbound" in action or "material_outbound" in action:
+            material_id = params.get("material_id")
+            if material_id:
+                results = execute_sql(
+                    "SELECT id, name, unit FROM materials WHERE id = :id AND shop_id = :sid",
+                    {"id": material_id, "sid": shop_id}
+                )
+                return results[0] if results else {}
+
+        elif "grant_coupon" in action:
+            coupon_id = params.get("coupon_id")
+            if coupon_id:
+                results = execute_sql(
+                    "SELECT id, name, value FROM coupons WHERE id = :id AND shop_id = :sid",
+                    {"id": coupon_id, "sid": shop_id}
+                )
+                return results[0] if results else {}
+
+        elif "reply_feedback" in action:
+            feedback_id = params.get("feedback_id")
+            if feedback_id:
+                results = execute_sql(
+                    "SELECT f.id, c.nickname "
+                    "FROM feedbacks f "
+                    "LEFT JOIN customers c ON f.customer_id = c.id "
+                    "WHERE f.id = :id AND f.shop_id = :sid",
+                    {"id": feedback_id, "sid": shop_id}
+                )
+                return results[0] if results else {}
+
+        elif "send_notification" in action:
+            return {"title": params.get("title", ""), "content": params.get("content", "")}
+
+    except Exception as e:
+        logger.warning(f"[QueryDetails] 查询操作详情失败: {str(e)}")
+
+    return {}
+
+
+def build_operation_result_text(action: str, result: str, details: dict) -> str:
+    """
+    构建完整的操作结果文本
+
+    Args:
+        action: 操作类型
+        result: 执行结果消息
+        details: 查询到的详情
+
+    Returns:
+        完整的结果文本
+    """
+    from app.tools import TOOL_DISPLAY_NAMES
+
+    display_name = TOOL_DISPLAY_NAMES.get(action, action)
+
+    if not details:
+        return f"{display_name}：{result}"
+
+    desc_parts = []
+
+    if "refund" in action:
+        name = details.get("nickname", "")
+        pkg = details.get("package_name", "")
+        amount = details.get("refund_amount")
+        if name:
+            desc_parts.append(name)
+        if pkg:
+            desc_parts.append(pkg)
+        if amount:
+            desc_parts.append(f"¥{amount}")
+    elif "checkin" in action or "finish" in action:
+        name = details.get("nickname", "")
+        pkg = details.get("package_name", "")
+        if name:
+            desc_parts.append(name)
+        if pkg:
+            desc_parts.append(pkg)
+    elif "material" in action:
+        name = details.get("name", "")
+        unit = details.get("unit", "")
+        if name:
+            desc_parts.append(name)
+        if unit:
+            desc_parts.append(unit)
+    elif "coupon" in action:
+        name = details.get("name", "")
+        value = details.get("value")
+        if name:
+            desc_parts.append(name)
+        if value:
+            desc_parts.append(f"¥{value}")
+    elif "feedback" in action:
+        name = details.get("nickname", "")
+        if name:
+            desc_parts.append(name)
+    elif "notification" in action:
+        title = details.get("title", "")
+        if title:
+            desc_parts.append(title)
+
+    desc = "（".join(desc_parts) + "）" if desc_parts else ""
+    return f"{display_name}：{desc} - {result}"
+
+
 # ==================== 请求/响应模型 ====================
 
 class ChatRequest(BaseModel):
@@ -144,12 +308,16 @@ async def confirm_action(
         result = execute_func(**params)
         logger.info(f"[Confirm] {request.action} 返回: {result}")
 
-        # 6. 保存执行结果到会话（持久化，重新打开面板时可反显）
+        # 6. 查询被操作记录详情，构建完整结果文本
+        details = query_operated_record_details(request.action, params, shop_id)
+        summary = build_operation_result_text(request.action, str(result), details)
+
+        # 7. 保存执行结果到会话（持久化，重新打开面板时可反显）
         if request.session_id:
             try:
                 from app.rag.session import get_session_manager
                 session_mgr = get_session_manager()
-                session_mgr.add_message(request.session_id, "assistant", str(result))
+                session_mgr.add_message(request.session_id, "assistant", summary)
             except Exception as e:
                 logger.warning(f"保存确认结果消息失败: {str(e)}")
 
@@ -157,7 +325,7 @@ async def confirm_action(
             f"确认操作执行成功 - user_id={user_context.user_id}, "
             f"action={request.action}"
         )
-        return {"success": True, "message": result}
+        return {"success": True, "message": summary}
 
     except HTTPException:
         # 保存错误消息到会话
@@ -223,53 +391,6 @@ async def select_action(
             else:
                 id_param = "id"
 
-            # 执行前：查询选中项的详情（用于构建完整结果文本）
-            from app.nl2sql.executor import execute_sql
-            item_details = {}
-            try:
-                if "refund" in request.action:
-                    placeholders = ", ".join([str(int(i)) for i in request.selected_ids])
-                    details = execute_sql(
-                        f"SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount "
-                        f"FROM refund_records rr "
-                        f"JOIN purchases pu ON rr.purchase_id = pu.id "
-                        f"JOIN packages p ON pu.package_id = p.id "
-                        f"LEFT JOIN customers c ON pu.customer_id = c.id "
-                        f"WHERE rr.id IN ({placeholders}) AND pu.shop_id = :sid",
-                        {"sid": shop_id}
-                    )
-                    for d in details:
-                        item_details[d["id"]] = d
-                elif "checkin" in request.action:
-                    placeholders = ", ".join([str(int(i)) for i in request.selected_ids])
-                    details = execute_sql(
-                        f"SELECT cs.id, c.nickname, p.name as package_name "
-                        f"FROM customer_sessions cs "
-                        f"JOIN purchases pu ON cs.purchase_id = pu.id "
-                        f"JOIN packages p ON pu.package_id = p.id "
-                        f"LEFT JOIN customers c ON pu.customer_id = c.id "
-                        f"WHERE cs.id IN ({placeholders}) AND cs.shop_id = :sid",
-                        {"sid": shop_id}
-                    )
-                    for d in details:
-                        item_details[d["id"]] = d
-                elif "finish" in request.action:
-                    placeholders = ", ".join([str(int(i)) for i in request.selected_ids])
-                    details = execute_sql(
-                        f"SELECT gs.id, c.nickname, p.name as package_name "
-                        f"FROM game_sessions gs "
-                        f"LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id "
-                        f"LEFT JOIN purchases pu ON cs.purchase_id = pu.id "
-                        f"JOIN packages p ON pu.package_id = p.id "
-                        f"LEFT JOIN customers c ON pu.customer_id = c.id "
-                        f"WHERE gs.id IN ({placeholders}) AND gs.shop_id = :sid",
-                        {"sid": shop_id}
-                    )
-                    for d in details:
-                        item_details[d["id"]] = d
-            except Exception as e:
-                logger.warning(f"[Select] 查询选中项详情失败: {str(e)}")
-
             for item_id in request.selected_ids:
                 params = request.params.copy()
                 params[id_param] = item_id
@@ -300,32 +421,19 @@ async def select_action(
 
             success_count = sum(1 for r in results if r["success"])
 
-            # 构建详细结果文本（使用查询到的详情）
+            # 构建详细结果文本（每条查询详情）
             from app.tools import TOOL_DISPLAY_NAMES
             display_name = TOOL_DISPLAY_NAMES.get(request.action, request.action)
             detail_lines = [f"{display_name}操作完成："]
             for r in results:
-                detail = item_details.get(r["id"], {})
-                name = detail.get("nickname", "")
-                pkg = detail.get("package_name", "")
-                amount = detail.get("refund_amount")
-
-                # 构建描述
-                desc_parts = []
-                if name:
-                    desc_parts.append(name)
-                if pkg:
-                    desc_parts.append(pkg)
-                if amount:
-                    desc_parts.append(f"¥{amount}")
-                desc = "（".join(desc_parts) + "）" if desc_parts else f"[ID:{r['id']}]"
-
-                if r["success"]:
-                    msg = r.get("message", "操作成功")
-                    detail_lines.append(f"- {desc}：{msg}")
-                else:
-                    msg = r.get("message", "操作失败")
-                    detail_lines.append(f"- {desc}：{msg}")
+                # 查询该条记录的详情
+                item_params = {id_param: r["id"], "shop_id": shop_id}
+                details = query_operated_record_details(request.action, item_params, shop_id)
+                detail_text = build_operation_result_text(request.action, r.get("message", ""), details)
+                # 只取冒号后面的部分作为单条结果
+                if "：" in detail_text:
+                    detail_text = detail_text.split("：", 1)[1]
+                detail_lines.append(f"- {detail_text}")
 
             detail_lines.append(f"\n成功 {success_count}/{len(request.selected_ids)} 条")
             summary = "\n".join(detail_lines)
