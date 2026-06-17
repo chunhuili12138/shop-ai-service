@@ -52,6 +52,21 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"定时任务启动失败: {str(e)}")
 
+    # 启动时重建知识库索引（异步执行，不阻塞启动）
+    def _rebuild_indexes():
+        try:
+            from app.rag.vectorstore import rebuild_index
+            from app.rag.bm25_retriever import reload_bm25_index
+            logger.info("开始重建知识库索引...")
+            rebuild_index()
+            reload_bm25_index()
+            logger.info("知识库索引重建完成")
+        except Exception as e:
+            logger.error(f"知识库索引重建失败: {str(e)}")
+
+    import threading
+    threading.Thread(target=_rebuild_indexes, daemon=True).start()
+
     yield
     # 关闭时执行
     logger.info("ShopCopilot AI Service 关闭中...")

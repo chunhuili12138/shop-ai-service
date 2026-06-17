@@ -25,8 +25,8 @@ class HybridRetriever(BaseRetriever):
     - Reranker：二次排序提高准确性
     """
 
-    bm25_weight: float = Field(default=0.3, description="BM25权重")
-    vector_weight: float = Field(default=0.7, description="向量权重")
+    bm25_weight: float = Field(default=0.5, description="BM25权重")
+    vector_weight: float = Field(default=0.5, description="向量权重")
     use_reranker: bool = Field(default=True, description="是否使用Reranker")
 
     def _get_relevant_documents(self, query: str) -> list[Document]:
