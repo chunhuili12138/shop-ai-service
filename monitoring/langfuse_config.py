@@ -40,6 +40,8 @@ def get_langfuse():
                 public_key=settings.LANGFUSE_PUBLIC_KEY,
                 secret_key=settings.LANGFUSE_SECRET_KEY,
                 host=settings.LANGFUSE_HOST,
+                flush_at=1,
+                flush_interval=1,
             )
             
             logger.info(f"LangFuse 已初始化: {settings.LANGFUSE_HOST}")
