@@ -1433,6 +1433,14 @@ Router 分析: {analysis}
             验证后的参数（含 _verified, _customer_name, _pending_refunds 等内部字段）
         """
         from app.nl2sql.executor import execute_sql
+        from decimal import Decimal
+
+        def convert_decimals(items: list) -> list:
+            """将查询结果中的 Decimal 转为 float（JSON 序列化需要）"""
+            converted = []
+            for item in items:
+                converted.append({k: float(v) if isinstance(v, Decimal) else v for k, v in item.items()})
+            return converted
 
         if tool_name in ("refund_approve", "refund_reject"):
             refund_id = params.get("refund_id")
@@ -1504,7 +1512,7 @@ Router 分析: {analysis}
                     params["_customer_name"] = results[0].get("nickname", "")
                 else:
                     params["_verified"] = False
-                    params["_pending_refunds"] = results
+                    params["_pending_refunds"] = convert_decimals(results)
                     params["_multi_select"] = True
 
             else:
@@ -1526,7 +1534,7 @@ Router 分析: {analysis}
                     params["_customer_name"] = results[0].get("nickname", "")
                 else:
                     params["_verified"] = False
-                    params["_pending_refunds"] = results
+                    params["_pending_refunds"] = convert_decimals(results)
                     params["_multi_select"] = True
 
         elif tool_name == "game_session_checkin":
@@ -1552,7 +1560,7 @@ Router 分析: {analysis}
                     params["_verified"] = True
                 else:
                     params["_verified"] = False
-                    params["_pending_items"] = results
+                    params["_pending_items"] = convert_decimals(results)
                     params["_multi_select"] = True
             elif customer_name:
                 # 按顾客名查询可用场次
@@ -1573,7 +1581,7 @@ Router 分析: {analysis}
                     params["_verified"] = True
                 else:
                     params["_verified"] = False
-                    params["_pending_items"] = results
+                    params["_pending_items"] = convert_decimals(results)
                     params["_multi_select"] = True
             else:
                 params["_verified"] = True
@@ -1598,7 +1606,7 @@ Router 分析: {analysis}
                 params["_verified"] = True
             else:
                 params["_verified"] = False
-                params["_pending_items"] = results
+                params["_pending_items"] = convert_decimals(results)
                 params["_multi_select"] = True
 
         else:
