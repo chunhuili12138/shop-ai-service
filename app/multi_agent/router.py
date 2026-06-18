@@ -252,6 +252,12 @@ plan 中每个步骤的 tool 字段决定了执行器如何调度，填写错误
 示例4 - 不支持的操作：
 {{"mode": "single", "agent": "llm", "reasoning": "删除数据不在系统能力范围", "understanding": "用户想删除顾客数据", "analysis": "不支持的操作", "plan": [{{"step": 1, "action": "告知用户不支持", "tool": "llm", "is_critical": true}}], "complexity": "simple"}}
 
+## 重要：输出格式要求
+1. 你必须只返回一个完整的 JSON 对象，不要包含任何其他文字、解释或 markdown 代码块标记（不要用 ```json ```）
+2. JSON 必须是有效的格式，所有字符串必须用双引号
+3. 不要在 JSON 前后添加任何文字
+4. 如果你不确定如何判断，也必须返回一个有效的 JSON（可以使用默认值）
+
 请直接返回 JSON："""
 
 
@@ -958,16 +964,57 @@ class TaskRouter:
                 content = content[start:end].strip()
             
             result = safe_parse_json(content)
+            
+            # JSON 解析失败时重试
+            max_retries = 2
+            retry_count = 0
+            while not result and retry_count < max_retries:
+                retry_count += 1
+                print(f"[Router] JSON 解析失败，重试 {retry_count}/{max_retries}")
+                # 加强 prompt，要求返回严格 JSON
+                retry_prompt = prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字。"
+                response = await self.llm.ainvoke([HumanMessage(content=retry_prompt)])
+                content = response.content.strip()
+                
+                # 提取 JSON
+                if "```json" in content:
+                    start = content.find("```json") + 7
+                    end = content.find("```", start)
+                    content = content[start:end].strip()
+                elif "```" in content:
+                    start = content.find("```") + 3
+                    end = content.find("```", start)
+                    content = content[start:end].strip()
+                
+                result = safe_parse_json(content)
+            
             if not result:
-                return {
-                    "mode": "single",
-                    "agent": AgentType.RAG,
-                    "reasoning": "JSON 解析失败，默认使用 RAG",
-                    "understanding": f"用户想要{task}",
-                    "analysis": "",
-                    "plan": [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}],
-                    "complexity": "simple"
-                }
+                # 重试都失败，根据关键词判断意图选择 fallback
+                operation_keywords = ["发放", "退款", "核销", "入库", "出库", "通知", "回复", "重试", "拒绝", "批准", "查", "查询", "搜索"]
+                is_operation = any(kw in task for kw in operation_keywords)
+                
+                if is_operation:
+                    print(f"[Router] JSON 解析失败（重试{retry_count}次），检测到操作类请求，fallback 到 TOOL")
+                    return {
+                        "mode": "single",
+                        "agent": AgentType.TOOL,
+                        "reasoning": f"JSON 解析失败（重试{retry_count}次），检测到操作类关键词，fallback 到 TOOL",
+                        "understanding": f"用户想要{task}",
+                        "analysis": "",
+                        "plan": [{"step": 1, "action": task, "tool": "tool", "is_critical": True}],
+                        "complexity": "simple"
+                    }
+                else:
+                    print(f"[Router] JSON 解析失败（重试{retry_count}次），fallback 到 RAG")
+                    return {
+                        "mode": "single",
+                        "agent": AgentType.RAG,
+                        "reasoning": f"JSON 解析失败（重试{retry_count}次），默认使用 RAG",
+                        "understanding": f"用户想要{task}",
+                        "analysis": "",
+                        "plan": [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}],
+                        "complexity": "simple"
+                    }
             
             # 知识性问题直接使用 RAG，不拆分任务
             if result.get("is_knowledge_question"):
@@ -1000,16 +1047,32 @@ class TaskRouter:
             return result
         except Exception as e:
             print(f"[Router] 路由判断失败: {str(e)}")
-            # 返回默认结果
-            return {
-                "mode": "single",
-                "agent": AgentType.RAG,
-                "reasoning": f"路由判断失败，默认使用 RAG: {str(e)}",
-                "understanding": f"用户想要{task}",
-                "analysis": "",
-                "plan": [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}],
-                "complexity": "simple"
-            }
+            # 根据关键词判断意图选择 fallback
+            operation_keywords = ["发放", "退款", "核销", "入库", "出库", "通知", "回复", "重试", "拒绝", "批准", "查", "查询", "搜索"]
+            is_operation = any(kw in task for kw in operation_keywords)
+            
+            if is_operation:
+                print(f"[Router] 路由判断失败，检测到操作类请求，fallback 到 TOOL")
+                return {
+                    "mode": "single",
+                    "agent": AgentType.TOOL,
+                    "reasoning": f"路由判断失败，检测到操作类关键词，fallback 到 TOOL: {str(e)}",
+                    "understanding": f"用户想要{task}",
+                    "analysis": "",
+                    "plan": [{"step": 1, "action": task, "tool": "tool", "is_critical": True}],
+                    "complexity": "simple"
+                }
+            else:
+                print(f"[Router] 路由判断失败，fallback 到 RAG")
+                return {
+                    "mode": "single",
+                    "agent": AgentType.RAG,
+                    "reasoning": f"路由判断失败，默认使用 RAG: {str(e)}",
+                    "understanding": f"用户想要{task}",
+                    "analysis": "",
+                    "plan": [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}],
+                    "complexity": "simple"
+                }
     
     async def _generate_plan(self, task: str, shop_context: str = "") -> dict:
         """
