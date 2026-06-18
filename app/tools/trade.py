@@ -38,22 +38,22 @@ class RefundsQueryInput(BaseModel):
 
 class RefundApproveInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    refund_id: int = Field(description="退款记录ID")
+    refund_id: Optional[int] = Field(default=None, description="退款记录ID（缺失时展示待处理退款列表）")
     remark: Optional[str] = Field(default=None, description="审批备注")
 
 class RefundRejectInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    refund_id: int = Field(description="退款记录ID")
+    refund_id: Optional[int] = Field(default=None, description="退款记录ID（缺失时展示待处理退款列表）")
     reason: Optional[str] = Field(default=None, description="拒绝原因（用户在确认框中填写）")
 
 class GameSessionCheckinInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    customer_id: int = Field(description="顾客ID")
-    customer_session_id: int = Field(description="顾客场次ID")
+    customer_id: Optional[int] = Field(default=None, description="顾客ID（缺失时展示顾客选择列表）")
+    customer_session_id: Optional[int] = Field(default=None, description="顾客场次ID（缺失时展示可用场次列表）")
 
 class GameSessionFinishInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    game_session_id: int = Field(description="游戏场次ID")
+    game_session_id: Optional[int] = Field(default=None, description="游戏场次ID（缺失时展示进行中场次列表）")
 
 
 # ==================== 查询工具 ====================

@@ -19,8 +19,8 @@ class FeedbacksQueryInput(BaseModel):
 
 class ReplyFeedbackInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    feedback_id: int = Field(description="评价ID")
-    reply_content: str = Field(description="回复内容")
+    feedback_id: Optional[int] = Field(default=None, description="评价ID（缺失时展示待处理评价列表）")
+    reply_content: Optional[str] = Field(default=None, description="回复内容（用户在确认框中填写）")
 
 
 @tool(args_schema=FeedbacksQueryInput)

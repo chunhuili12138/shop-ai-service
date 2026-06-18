@@ -25,8 +25,8 @@ class LowStockInput(BaseModel):
 class MaterialInboundInput(BaseModel):
     """物料入库参数"""
     shop_id: int = Field(description="店铺ID")
-    material_id: int = Field(description="物料ID")
-    quantity: float = Field(description="入库数量")
+    material_id: Optional[int] = Field(default=None, description="物料ID（缺失时展示物料选择列表）")
+    quantity: Optional[float] = Field(default=None, description="入库数量（缺失时展示输入框）")
     unit_price: Optional[float] = Field(default=None, description="单价（可选）")
     remark: Optional[str] = Field(default=None, description="备注（可选）")
 
@@ -34,8 +34,8 @@ class MaterialInboundInput(BaseModel):
 class MaterialOutboundInput(BaseModel):
     """物料出库参数"""
     shop_id: int = Field(description="店铺ID")
-    material_id: int = Field(description="物料ID")
-    quantity: float = Field(description="出库数量")
+    material_id: Optional[int] = Field(default=None, description="物料ID（缺失时展示物料选择列表）")
+    quantity: Optional[float] = Field(default=None, description="出库数量（缺失时展示输入框）")
     remark: Optional[str] = Field(default=None, description="备注（可选）")
 
 

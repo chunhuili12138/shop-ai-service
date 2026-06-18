@@ -17,10 +17,10 @@ class NotificationsQueryInput(BaseModel):
 
 class SendNotificationInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    recipient_ids: str = Field(description="接收者ID列表，逗号分隔")
+    recipient_ids: Optional[str] = Field(default=None, description="接收者ID列表，逗号分隔（缺失时展示接收者选择列表）")
     recipient_type: str = Field(default="staff", description="接收者类型: staff=员工, customer=顾客")
-    title: str = Field(description="通知标题")
-    content: str = Field(description="通知内容")
+    title: Optional[str] = Field(default=None, description="通知标题（缺失时展示输入框）")
+    content: Optional[str] = Field(default=None, description="通知内容（缺失时展示输入框）")
 
 
 @tool(args_schema=NotificationsQueryInput)
