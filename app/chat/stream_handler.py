@@ -1659,119 +1659,277 @@ Router 分析: {analysis}
 
         return params
 
-    async def _execute_tool_direct(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+    async def _execute_with_param_resolution(self, tool_name: str, message: str, route_context: dict = None) -> dict:
         """
-        直接调用 TOOL_MAP 中的工具（不经过 AgentLoop）
+        带参数解析的工具执行流程
 
-        流程：LLM 提取参数 → DB 验证补充 → 调用工具
+        1. LLM 提取参数
+        2. 检查工具的参数计划，确定缺失参数
+        3. 对缺失参数，用 LLM 从用户消息中提取名称/标记
+        4. 用查询工具解析名称→ID
+        5. 参数齐全后调用执行工具返回 confirm
 
         Args:
-            tool_name: 工具名称（如 query_refunds, refund_approve）
-            message: 用户消息
+            tool_name: 工具名称
+            message: 用户原始消息
             route_context: 路由上下文
 
         Returns:
-            {"success": bool, "result": str, "error": str}
+            {"success": bool, "result": str, "error": str, "confirm_data": dict, "select_data": dict}
         """
         t0 = time.time()
         try:
             from app.tools import TOOL_MAP
+            from app.tools.param_plans import TOOL_PARAM_PLANS
+
             tool = TOOL_MAP.get(tool_name)
             if not tool:
                 return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
 
-            # Step 1: LLM 从上下文提取参数
+            param_plan = TOOL_PARAM_PLANS.get(tool_name)
+            if not param_plan:
+                # 没有参数计划，直接调用工具
+                return await self._call_tool_direct(tool, tool_name, message, route_context)
+
+            # Step 1: LLM 提取参数
             history_text = self._get_history_text()
-            params = await self._extract_params_with_llm(tool_name, message, route_context, history_text)
+            extracted = await self._extract_params_with_llm(tool_name, message, route_context, history_text)
+            print(f"[ParamResolution] LLM 提取: {extracted}")
 
-            # Step 2: DB 验证和补充
-            params = await self._verify_and_fill_params(tool_name, params)
+            # Step 2: 确定缺失参数
+            missing_params = []
+            for param_name, query_info in param_plan.get("from_query", {}).items():
+                if not extracted.get(param_name) and not extracted.get(f"_{param_name}"):
+                    missing_params.append((param_name, query_info))
 
-            # Step 3: 检查验证结果
-            if not params.get("_verified"):
-                error = params.get("_error", "参数验证失败")
-                pending = params.get("_pending_refunds") or params.get("_pending_items")
-                if pending and params.get("_multi_select"):
-                    # 多条匹配，返回 select 类型让前端渲染选择列表
-                    # 根据 tool_name 动态生成 fields 和标题
-                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                    select_fields = []
-                    select_title = f"{display_name} - 选择要操作的记录"
-                    if "refund_reject" in tool_name:
-                        select_fields = [{"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝理由"}]
-                    elif "refund_approve" in tool_name:
-                        select_fields = [{"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注"}]
-                    elif "checkin" in tool_name:
-                        select_title = f"{display_name} - 选择要核销的场次"
-                    elif "finish" in tool_name:
-                        select_title = f"{display_name} - 选择要结束的场次"
+            if not missing_params:
+                # 所有参数齐全，直接调用工具
+                clean_params = {k: v for k, v in extracted.items() if not k.startswith("_") and v is not None}
+                print(f"[ParamResolution] 参数齐全，直接调用: {clean_params}")
+                return await self._call_tool_direct(tool, tool_name, message, route_context, override_params=clean_params)
 
-                    return {
-                        "success": True,
-                        "result": "",
-                        "select_data": {
-                            "tool_name": tool_name,
-                            "title": select_title,
-                            "message": f"找到 {len(pending)} 条匹配记录，请选择：",
-                            "items": pending,
-                            "fields": select_fields,
-                            "buttons": [
-                                {"type": "confirm", "label": "确认操作选中项"},
-                                {"type": "cancel", "label": "取消"},
-                            ],
-                            "action": tool_name,
-                        },
-                        "error": "",
-                    }
-                elif pending:
-                    return {"success": False, "result": "", "error": error, "pending_refunds": pending}
-                return {"success": False, "result": "", "error": error}
+            # Step 3: 对每个缺失参数，用 LLM 从用户消息中提取名称/标记
+            resolution_prompt_parts = []
+            for param_name, query_info in missing_params:
+                desc = query_info.get("description", param_name)
+                resolution_prompt_parts.append(f"- {param_name}: {desc}")
 
-            # Step 4: 清理内部字段，调用工具
-            tool_args = {k: v for k, v in params.items() if not k.startswith("_")}
-            print(f"[StreamHandler:ToolDirect] 调用 {tool_name}，参数: {tool_args}")
+            resolution_prompt = f"""从用户消息中提取以下信息，返回 JSON：
 
+用户消息: {message}
+
+需要提取的信息:
+{chr(10).join(resolution_prompt_parts)}
+
+规则:
+- 如果用户说了具体名称（如"兑换券"），提取名称
+- 如果用户说"所有"/"全部"，标记为 "ALL"
+- 如果无法确定，填 null
+- 只返回 JSON"""
+
+            from app.llm import get_chat_llm
+            from langchain_core.messages import HumanMessage
+
+            llm = get_chat_llm(temperature=0)
+            resp = await llm.ainvoke([HumanMessage(content=resolution_prompt)])
+            content = resp.content.strip()
+            if "{" in content:
+                json_str = content[content.index("{"):content.rindex("}") + 1]
+                import json as _json
+                resolved_names = _json.loads(json_str)
+            else:
+                resolved_names = {}
+
+            print(f"[ParamResolution] LLM 解析名称: {resolved_names}")
+
+            # Step 4: 用查询工具解析名称→ID
+            shop_id = self.user_context.shop_id
+            final_params = {"shop_id": shop_id}
+
+            for param_name, query_info in missing_params:
+                extracted_name = resolved_names.get(param_name) or extracted.get(f"_{param_name}")
+
+                if not extracted_name:
+                    # LLM 也无法确定，返回选择框让用户选
+                    all_items = await self._query_tool_items(query_info["query_tool"], shop_id)
+                    if not all_items:
+                        return {"success": False, "result": "", "error": f"没有可用的{query_info.get('description', param_name)}"}
+                    # 返回 select 弹窗
+                    return self._build_select_response(tool_name, param_plan, param_name, all_items)
+
+                if extracted_name.upper() == "ALL":
+                    # 用户说"所有"，查全部
+                    if query_info.get("concat"):
+                        all_items = await self._query_tool_items(query_info["query_tool"], shop_id)
+                        if all_items:
+                            all_ids = [str(item.get("id", "")) for item in all_items]
+                            final_params[param_name] = ",".join(all_ids)
+                    else:
+                        all_items = await self._query_tool_items(query_info["query_tool"], shop_id)
+                        if all_items:
+                            final_params[param_name] = all_items[0].get("id")
+                else:
+                    # 按名称查询
+                    items = await self._query_tool_by_name(query_info["query_tool"], shop_id, extracted_name)
+                    if not items:
+                        return {"success": False, "result": "", "error": f"没有找到名为'{extracted_name}'的{query_info.get('description', '')}"}
+                    elif len(items) == 1:
+                        final_params[param_name] = items[0].get("id")
+                    else:
+                        # 多条匹配，返回选择框
+                        return self._build_select_response(tool_name, param_plan, param_name, items)
+
+            # Step 5: 参数齐全，调用工具
+            print(f"[ParamResolution] 参数解析完成: {final_params}")
+            return await self._call_tool_direct(tool, tool_name, message, route_context, override_params=final_params)
+
+        except Exception as e:
+            duration = (time.time() - t0) * 1000
+            print(f"[ParamResolution] 异常({duration:.0f}ms): {str(e)}")
+            return {"success": False, "result": "", "error": str(e)}
+
+    async def _query_tool_items(self, query_tool_name: str, shop_id: int) -> list:
+        """调用查询工具获取所有记录"""
+        try:
+            from app.tools import TOOL_MAP
+            tool = TOOL_MAP.get(query_tool_name)
+            if not tool:
+                return []
+            result = await asyncio.to_thread(tool.invoke, {"shop_id": shop_id})
+            # 查询工具返回格式化字符串，需要解析
+            # 直接查 DB 获取原始数据更可靠
+            from app.nl2sql.executor import execute_sql
+            from app.tools.param_plans import QUERY_TOOL_FILTERS
+            filter_info = QUERY_TOOL_FILTERS.get(query_tool_name, {})
+            table = filter_info.get("table", "")
+            id_field = filter_info.get("id_field", "id")
+            name_field = filter_info.get("name_field", "name")
+            if not table:
+                return []
+            results = execute_sql(
+                f"SELECT {id_field} as id, {name_field} as name FROM {table} WHERE shop_id = :sid AND (is_deleted = 0 OR is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            return results or []
+        except Exception as e:
+            print(f"[ParamResolution] 查询工具 {query_tool_name} 失败: {str(e)}")
+            return []
+
+    async def _query_tool_by_name(self, query_tool_name: str, shop_id: int, name: str) -> list:
+        """按名称查询工具获取匹配记录"""
+        try:
+            from app.nl2sql.executor import execute_sql
+            from app.tools.param_plans import QUERY_TOOL_FILTERS
+            filter_info = QUERY_TOOL_FILTERS.get(query_tool_name, {})
+            table = filter_info.get("table", "")
+            id_field = filter_info.get("id_field", "id")
+            name_field = filter_info.get("name_field", "name")
+            if not table:
+                return []
+            results = execute_sql(
+                f"SELECT {id_field} as id, {name_field} as name FROM {table} "
+                f"WHERE shop_id = :sid AND {name_field} LIKE :name AND (is_deleted = 0 OR is_deleted IS NULL)",
+                {"sid": shop_id, "name": f"%{name}%"}
+            )
+            return results or []
+        except Exception as e:
+            print(f"[ParamResolution] 按名称查询 {query_tool_name} 失败: {str(e)}")
+            return []
+
+    def _build_select_response(self, tool_name: str, param_plan: dict, param_name: str, items: list) -> dict:
+        """构建 select 弹窗响应"""
+        from app.tools import TOOL_DISPLAY_NAMES
+        display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+
+        # 构建 fields
+        fields = [{
+            "name": param_name,
+            "type": "select" if len(items) <= 20 else "multi_select",
+            "label": f"选择{param_plan['from_query'][param_name].get('description', param_name)}",
+            "required": True,
+            "options": [{"value": str(item["id"]), "label": item.get("name", str(item["id"]))} for item in items],
+        }]
+
+        # 添加用户输入字段
+        for input_field in param_plan.get("user_input", []):
+            fields.append({
+                "name": input_field,
+                "type": "input",
+                "label": input_field,
+                "required": True,
+                "placeholder": f"请输入{input_field}",
+            })
+
+        return {
+            "success": True,
+            "result": "",
+            "confirm_data": {
+                "type": "confirm",
+                "tool_name": tool_name,
+                "title": param_plan.get("confirm_template", {}).get("title", f"确认{display_name}"),
+                "message": param_plan.get("confirm_template", {}).get("message", "请选择："),
+                "details": {},
+                "fields": fields,
+                "buttons": [
+                    {"type": "confirm", "label": "确认"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": tool_name,
+                "params": {"shop_id": self.user_context.shop_id},
+            },
+            "error": "",
+        }
+
+    async def _call_tool_direct(self, tool, tool_name: str, message: str, route_context: dict = None, override_params: dict = None) -> dict:
+        """直接调用工具（最终调用点）"""
+        t0 = time.time()
+        try:
+            # 构建参数
+            if override_params:
+                tool_args = override_params
+            else:
+                tool_args = self._build_tool_args(tool_name, message, route_context)
+
+            print(f"[ToolDirect] 调用 {tool_name}，参数: {tool_args}")
             answer = await asyncio.to_thread(tool.invoke, tool_args)
 
             duration = (time.time() - t0) * 1000
-            print(f"[StreamHandler:ToolDirect] {tool_name} 执行耗时: {duration:.0f}ms")
-            print(f"[StreamHandler:ToolDirect] {tool_name} 返回: {str(answer)}")
+            print(f"[ToolDirect] {tool_name} 执行耗时: {duration:.0f}ms")
+            print(f"[ToolDirect] {tool_name} 返回: {str(answer)}")
 
-            # 确认框类型直接返回
             if isinstance(answer, dict) and answer.get("type") == "confirm":
                 return {"success": True, "result": str(answer), "confirm_data": answer, "error": ""}
-
-            # 错误类型
             if isinstance(answer, dict) and answer.get("type") == "error":
                 return {"success": False, "result": "", "error": answer.get("message", "操作失败")}
-
             return {"success": True, "result": str(answer), "error": ""}
         except Exception as e:
             duration = (time.time() - t0) * 1000
-            print(f"[StreamHandler:ToolDirect] {tool_name} 异常({duration:.0f}ms): {str(e)}")
+            print(f"[ToolDirect] {tool_name} 异常({duration:.0f}ms): {str(e)}")
             return {"success": False, "result": "", "error": str(e)}
 
-            
+    async def _execute_tool_direct(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+        """
+        直接调用 TOOL_MAP 中的工具（不经过 AgentLoop）
 
-            # 错误类型
+        流程：LLM 提取参数 → 查询工具解析名称→ID → 调用工具
 
-            if isinstance(answer, dict) and answer.get("type") == "error":
+        Args:
+            tool_name: 工具名称
+            message: 用户消息
+            route_context: 路由上下文
 
-                return {"success": False, "result": "", "error": answer.get("message", "操作失败")}
+        Returns:
+            {"success": bool, "result": str, "error": str, "confirm_data": dict}
+        """
+        # 检查工具是否有参数解析计划
+        from app.tools.param_plans import TOOL_PARAM_PLANS
 
-            
-
-            return {"success": True, "result": str(answer), "error": ""}
-
-        except Exception as e:
-
-            duration = (time.time() - t0) * 1000
-
-            print(f"[StreamHandler:ToolDirect] {tool_name} 异常({duration:.0f}ms): {str(e)}")
-
-            return {"success": False, "result": "", "error": str(e)}
-
-    
+        if tool_name in TOOL_PARAM_PLANS:
+            # 有参数解析计划，走 LLM 编排流程
+            return await self._execute_with_param_resolution(tool_name, message, route_context)
+        else:
+            # 没有参数解析计划，直接调用工具
+            return await self._call_tool_direct(None, tool_name, message, route_context)
 
     def _is_valid_result(self, result: str, action: str) -> bool:
 

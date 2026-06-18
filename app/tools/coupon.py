@@ -18,8 +18,8 @@ class CouponsQueryInput(BaseModel):
 
 class GrantCouponInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    coupon_id: Optional[int] = Field(default=None, description="优惠券ID（缺失时展示优惠券选择列表）")
-    customer_ids: Optional[str] = Field(default=None, description="顾客ID列表，逗号分隔（缺失时展示顾客选择列表）")
+    coupon_id: int = Field(description="优惠券ID")
+    customer_ids: str = Field(description="顾客ID列表，逗号分隔")
 
 class CouponUsagesQueryInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
@@ -68,7 +68,7 @@ def query_coupons(shop_id: int, status: Optional[str] = None) -> str:
 
 
 @tool(args_schema=GrantCouponInput)
-def grant_coupon(shop_id: int, coupon_id: Optional[int] = None, customer_ids: Optional[str] = None) -> dict:
+def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
     """发放优惠券给顾客。返回确认框，需用户确认后执行。"""
     try:
         fields = []

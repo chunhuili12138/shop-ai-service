@@ -38,22 +38,22 @@ class RefundsQueryInput(BaseModel):
 
 class RefundApproveInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    refund_id: Optional[int] = Field(default=None, description="退款记录ID（缺失时展示待处理退款列表）")
+    refund_id: int = Field(description="退款记录ID")
     remark: Optional[str] = Field(default=None, description="审批备注")
 
 class RefundRejectInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    refund_id: Optional[int] = Field(default=None, description="退款记录ID（缺失时展示待处理退款列表）")
-    reason: Optional[str] = Field(default=None, description="拒绝原因（用户在确认框中填写）")
+    refund_id: int = Field(description="退款记录ID")
+    reason: Optional[str] = Field(default=None, description="拒绝原因")
 
 class GameSessionCheckinInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    customer_id: Optional[int] = Field(default=None, description="顾客ID（缺失时展示顾客选择列表）")
-    customer_session_id: Optional[int] = Field(default=None, description="顾客场次ID（缺失时展示可用场次列表）")
+    customer_id: int = Field(description="顾客ID")
+    customer_session_id: int = Field(description="顾客场次ID")
 
 class GameSessionFinishInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    game_session_id: Optional[int] = Field(default=None, description="游戏场次ID（缺失时展示进行中场次列表）")
+    game_session_id: int = Field(description="游戏场次ID")
 
 
 # ==================== 查询工具 ====================
@@ -178,7 +178,7 @@ def query_refunds(shop_id: int, purchase_id: Optional[int] = None, status: Optio
 # ==================== 确认框工具（返回确认数据，不执行写操作）====================
 
 @tool(args_schema=RefundApproveInput)
-def refund_approve(shop_id: int, refund_id: Optional[int] = None, remark: Optional[str] = None) -> dict:
+def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -> dict:
     """审批退款（批准）。返回确认框，需用户确认后执行。"""
     try:
         # ===== 参数完整性检查：refund_id =====
@@ -267,7 +267,7 @@ def refund_approve(shop_id: int, refund_id: Optional[int] = None, remark: Option
 
 
 @tool(args_schema=RefundRejectInput)
-def refund_reject(shop_id: int, refund_id: Optional[int] = None, reason: Optional[str] = None) -> dict:
+def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) -> dict:
     """审批退款（拒绝）。返回确认框，需用户确认后执行。"""
     try:
         # ===== 参数完整性检查：refund_id =====
@@ -355,7 +355,7 @@ def refund_reject(shop_id: int, refund_id: Optional[int] = None, reason: Optiona
 
 
 @tool(args_schema=GameSessionCheckinInput)
-def game_session_checkin(shop_id: int, customer_id: Optional[int] = None, customer_session_id: Optional[int] = None) -> dict:
+def game_session_checkin(shop_id: int, customer_id: int, customer_session_id: int) -> dict:
     """核销入座。返回确认框，需用户确认后执行。"""
     try:
         fields = []
@@ -479,7 +479,7 @@ def game_session_checkin(shop_id: int, customer_id: Optional[int] = None, custom
 
 
 @tool(args_schema=GameSessionFinishInput)
-def game_session_finish(shop_id: int, game_session_id: Optional[int] = None) -> dict:
+def game_session_finish(shop_id: int, game_session_id: int) -> dict:
     """结束游玩。返回确认框，需用户确认后执行。"""
     try:
         # ===== 参数完整性检查 =====

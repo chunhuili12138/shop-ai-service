@@ -19,8 +19,8 @@ class FeedbacksQueryInput(BaseModel):
 
 class ReplyFeedbackInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    feedback_id: Optional[int] = Field(default=None, description="评价ID（缺失时展示待处理评价列表）")
-    reply_content: Optional[str] = Field(default=None, description="回复内容（用户在确认框中填写）")
+    feedback_id: int = Field(description="评价ID")
+    reply_content: Optional[str] = Field(default=None, description="回复内容")
 
 
 @tool(args_schema=FeedbacksQueryInput)
@@ -67,7 +67,7 @@ def query_feedbacks(shop_id: int, status: Optional[str] = None, limit: int = 10)
 
 
 @tool(args_schema=ReplyFeedbackInput)
-def reply_feedback(shop_id: int, feedback_id: Optional[int] = None, reply_content: Optional[str] = None) -> dict:
+def reply_feedback(shop_id: int, feedback_id: int, reply_content: Optional[str] = None) -> dict:
     """回复顾客评价。返回确认框，需用户确认后执行。"""
     try:
         # ===== 参数完整性检查 =====

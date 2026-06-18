@@ -17,10 +17,10 @@ class NotificationsQueryInput(BaseModel):
 
 class SendNotificationInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    recipient_ids: Optional[str] = Field(default=None, description="接收者ID列表，逗号分隔（缺失时展示接收者选择列表）")
+    recipient_ids: str = Field(description="接收者ID列表，逗号分隔")
     recipient_type: str = Field(default="staff", description="接收者类型: staff=员工, customer=顾客")
-    title: Optional[str] = Field(default=None, description="通知标题（缺失时展示输入框）")
-    content: Optional[str] = Field(default=None, description="通知内容（缺失时展示输入框）")
+    title: str = Field(description="通知标题")
+    content: str = Field(description="通知内容")
 
 
 @tool(args_schema=NotificationsQueryInput)
@@ -62,7 +62,7 @@ def query_notifications(shop_id: int, recipient_type: Optional[str] = None, limi
 
 
 @tool(args_schema=SendNotificationInput)
-def send_notification(shop_id: int, recipient_ids: Optional[str] = None, recipient_type: str = "staff", title: Optional[str] = None, content: Optional[str] = None) -> dict:
+def send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "staff", title: str = "", content: str = "") -> dict:
     """发送通知。返回确认框，需用户确认后执行。"""
     try:
         fields = []
