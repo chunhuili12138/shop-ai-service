@@ -130,10 +130,10 @@ def material_inbound(token: str, shop_id: int, material_id: int, quantity: str, 
 
 
 def material_outbound(token: str, shop_id: int, material_id: int, quantity: str, remark: str = None) -> dict:
-    """物料出库"""
+    """物料出库（remark 必填，Java 后端会校验）"""
     data = {"materialId": str(material_id), "quantity": quantity}
-    if remark:
-        data["remark"] = remark
+    # Java 后端要求 remark 必填，如果为空则给默认值
+    data["remark"] = remark if remark else "手动出库"
     return call_backend_api_sync(
         "POST", "/api/inventoryOutbound",
         token=token, shop_id=shop_id,
@@ -151,14 +151,13 @@ def reply_feedback(token: str, shop_id: int, feedback_id: int, reply_content: st
 
 
 def send_notification(token: str, shop_id: int, recipient_ids: str, recipient_type: int, title: str, content: str) -> dict:
-    """发送通知"""
+    """发送通知（channel 由 Java 后端硬编码，无需传递）"""
     return call_backend_api_sync(
         "POST", "/api/notificationsSend",
         token=token, shop_id=shop_id,
         params={
             "recipientIds": recipient_ids,
             "recipientType": str(recipient_type),
-            "channel": "3",
             "title": title,
             "content": content,
         },
