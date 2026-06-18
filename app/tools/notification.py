@@ -64,34 +64,135 @@ def query_notifications(shop_id: int, recipient_type: Optional[str] = None, limi
 @tool(args_schema=SendNotificationInput)
 def send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "staff", title: str = "", content: str = "") -> dict:
     """发送通知。返回确认框，需用户确认后执行。"""
-    id_list = [int(i.strip()) for i in recipient_ids.split(",") if i.strip()]
-    if not id_list:
-        return {"type": "error", "message": "请提供有效的接收者ID"}
-    rt = 1 if recipient_type == "staff" else 2
-    rt_name = "员工" if rt == 1 else "顾客"
-    return {
-        "type": "confirm",
-        "tool_name": "send_notification",
-        "title": "确认发送通知",
-        "message": f"确定要向 {len(id_list)} 位{rt_name}发送通知吗？",
-        "details": {
-            "接收者类型": rt_name,
-            "接收人数": str(len(id_list)),
-        },
-        "fields": [
-            {"name": "title", "type": "input", "label": "通知标题", "required": True, "placeholder": "请输入通知标题", "value": title or ""},
-            {"name": "content", "type": "textarea", "label": "通知内容", "required": True, "placeholder": "请输入通知内容", "value": content or ""}
-        ],
-        "buttons": [
-            {"type": "confirm", "label": "确认发送"},
-            {"type": "cancel", "label": "取消"}
-        ],
-        "action": "send_notification",
-        "params": {
-            "shop_id": shop_id, "recipient_ids": recipient_ids,
-            "recipient_type": recipient_type, "title": title, "content": content
+    try:
+        fields = []
+        details = {}
+
+        # ===== 检查 recipient_ids =====
+        id_list = []
+        if recipient_ids:
+            id_list = [int(i.strip()) for i in recipient_ids.split(",") if i.strip()]
+
+        if not id_list:
+            # 查询可发送对象
+            rt = 1 if recipient_type == "staff" else 2
+            rt_name = "员工" if rt == 1 else "顾客"
+
+            if rt == 1:
+                recipients = execute_sql(
+                    "SELECT s.id, s.name, s.phone FROM staff s "
+                    "JOIN staff_shops ss ON s.id = ss.staff_id "
+                    "WHERE ss.shop_id = :sid AND s.is_deleted = 0",
+                    {"sid": shop_id}
+                )
+            else:
+                recipients = execute_sql(
+                    "SELECT id, nickname as name, phone FROM customers "
+                    "WHERE shop_id = :sid AND is_deleted = 0 ORDER BY nickname",
+                    {"sid": shop_id}
+                )
+
+            if not recipients:
+                return {"type": "error", "message": f"当前没有{rt_name}"}
+
+            fields.append({
+                "name": "recipient_ids",
+                "type": "multi_select",
+                "label": f"选择{rt_name}",
+                "required": True,
+                "options": [
+                    {"value": "ALL", "label": f"所有{rt_name}（{len(recipients)}人）"},
+                ] + [
+                    {"value": str(r["id"]), "label": f"{r['name']} ({r['phone'] or '无手机'})"}
+                    for r in recipients
+                ],
+            })
+            details["接收者类型"] = rt_name
+
+        # ===== 检查 title =====
+        if not title or title.strip() == "":
+            fields.append({
+                "name": "title",
+                "type": "input",
+                "label": "通知标题",
+                "required": True,
+                "placeholder": "请输入通知标题",
+            })
+
+        # ===== 检查 content =====
+        if not content or content.strip() == "":
+            fields.append({
+                "name": "content",
+                "type": "textarea",
+                "label": "通知内容",
+                "required": True,
+                "placeholder": "请输入通知内容",
+            })
+
+        # ===== 有缺失字段 → 返回填写表单 =====
+        if fields:
+            return {
+                "type": "confirm",
+                "tool_name": "send_notification",
+                "title": "发送通知",
+                "message": "请填写以下信息：",
+                "details": details,
+                "fields": fields,
+                "buttons": [
+                    {"type": "confirm", "label": "确认发送"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "send_notification",
+                "params": {"shop_id": shop_id, "recipient_type": recipient_type},
+            }
+
+        # ===== 参数齐全 =====
+        rt = 1 if recipient_type == "staff" else 2
+        rt_name = "员工" if rt == 1 else "顾客"
+
+        if recipient_ids.upper() == "ALL":
+            if rt == 1:
+                all_recipients = execute_sql(
+                    "SELECT GROUP_CONCAT(s.id) as ids FROM staff s "
+                    "JOIN staff_shops ss ON s.id = ss.staff_id "
+                    "WHERE ss.shop_id = :sid AND s.is_deleted = 0",
+                    {"sid": shop_id}
+                )
+            else:
+                all_recipients = execute_sql(
+                    "SELECT GROUP_CONCAT(id) as ids FROM customers "
+                    "WHERE shop_id = :sid AND is_deleted = 0",
+                    {"sid": shop_id}
+                )
+            recipient_ids = str(all_recipients[0]["ids"]) if all_recipients and all_recipients[0]["ids"] else ""
+            id_list = [int(i.strip()) for i in recipient_ids.split(",") if i.strip()]
+
+        if not id_list:
+            return {"type": "error", "message": "请提供有效的接收者ID"}
+
+        return {
+            "type": "confirm",
+            "tool_name": "send_notification",
+            "title": "确认发送通知",
+            "message": f"确定要向 {len(id_list)} 位{rt_name}发送通知吗？",
+            "details": {
+                "接收者类型": rt_name,
+                "接收人数": str(len(id_list)),
+                "标题": title,
+            },
+            "fields": [],
+            "buttons": [
+                {"type": "confirm", "label": "确认发送"},
+                {"type": "cancel", "label": "取消"},
+            ],
+            "action": "send_notification",
+            "params": {
+                "shop_id": shop_id, "recipient_ids": recipient_ids,
+                "recipient_type": recipient_type, "title": title, "content": content
+            }
         }
-    }
+    except Exception as e:
+        return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
 def execute_send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "staff", title: str = "", content: str = "", operator_id: Optional[int] = None) -> str:

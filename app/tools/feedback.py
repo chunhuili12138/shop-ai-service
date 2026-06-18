@@ -69,11 +69,52 @@ def query_feedbacks(shop_id: int, status: Optional[str] = None, limit: int = 10)
 @tool(args_schema=ReplyFeedbackInput)
 def reply_feedback(shop_id: int, feedback_id: int, reply_content: str) -> dict:
     """回复顾客评价。返回确认框，需用户确认后执行。"""
-    check_sql = """
-        SELECT id, status, content FROM feedbacks
-        WHERE shop_id = :shop_id AND id = :feedback_id
-    """
     try:
+        # ===== 参数完整性检查 =====
+        if not feedback_id or feedback_id == 0:
+            # 查询待处理评价
+            pending = execute_sql(
+                "SELECT f.id, c.nickname, f.rating, f.content, f.feedback_type "
+                "FROM feedbacks f "
+                "LEFT JOIN customers c ON f.customer_id = c.id "
+                "WHERE f.shop_id = :sid AND f.status = 1 AND (f.is_deleted = 0 OR f.is_deleted IS NULL) "
+                "ORDER BY f.created_at DESC",
+                {"sid": shop_id}
+            )
+            if not pending:
+                return {"type": "error", "message": "当前没有待处理的评价"}
+            return {
+                "type": "confirm",
+                "tool_name": "reply_feedback",
+                "title": "回复评价",
+                "message": "请选择要回复的评价：",
+                "details": {},
+                "fields": [
+                    {
+                        "name": "feedback_id",
+                        "type": "select",
+                        "label": "选择评价",
+                        "required": True,
+                        "options": [
+                            {"value": str(f["id"]), "label": f"{f['nickname'] or '匿名'} - {'⭐' * f['rating'] if f['rating'] else '未评分'} {(f['content'] or '')[:30]}"}
+                            for f in pending
+                        ],
+                    },
+                    {"name": "reply_content", "type": "textarea", "label": "回复内容", "required": True, "placeholder": "请输入回复内容", "value": reply_content or ""},
+                ],
+                "buttons": [
+                    {"type": "confirm", "label": "确认回复"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "reply_feedback",
+                "params": {"shop_id": shop_id},
+            }
+
+        # ===== 参数齐全 =====
+        check_sql = """
+            SELECT id, status, content FROM feedbacks
+            WHERE shop_id = :shop_id AND id = :feedback_id
+        """
         check_results = execute_sql(check_sql, {"shop_id": shop_id, "feedback_id": feedback_id})
         if not check_results:
             return {"type": "error", "message": "评价不存在"}

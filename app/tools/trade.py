@@ -357,78 +357,208 @@ def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) ->
 @tool(args_schema=GameSessionCheckinInput)
 def game_session_checkin(shop_id: int, customer_id: int, customer_session_id: int) -> dict:
     """核销入座。返回确认框，需用户确认后执行。"""
-    session_sql = """
-        SELECT cs.id, cs.status, p.name as package_name, p.duration_minutes,
-               cs.session_date, c.nickname, c.phone
-        FROM customer_sessions cs
-        JOIN purchases pu ON cs.purchase_id = pu.id
-        JOIN packages p ON pu.package_id = p.id
-        LEFT JOIN customers c ON pu.customer_id = c.id
-        WHERE cs.id = :customer_session_id AND cs.shop_id = :shop_id AND cs.is_deleted = 0
-    """
-    session = execute_sql(session_sql, {"customer_session_id": customer_session_id, "shop_id": shop_id})
-    if not session:
-        return {"type": "error", "message": "场次不存在"}
-    info = session[0]
-    if info["status"] != 1:
-        status_names = {2: "已核销", 3: "已过期", 4: "已退款"}
-        return {"type": "error", "message": f"该场次{status_names.get(info['status'], '不可用')}"}
-    return {
-        "type": "confirm",
-        "tool_name": "game_session_checkin",
-        "title": "确认核销",
-        "message": f"确定要为 {info['nickname']} 核销套餐吗？",
-        "details": {
-            "顾客": info["nickname"], "手机": info["phone"] or "未绑定",
-            "套餐": info["package_name"], "时长": f"{info['duration_minutes']}分钟",
-            "场次日期": str(info["session_date"])
-        },
-        "fields": [],
-        "buttons": [
-            {"type": "confirm", "label": "确认核销"},
-            {"type": "cancel", "label": "取消"}
-        ],
-        "action": "game_session_checkin",
-        "params": {"shop_id": shop_id, "customer_id": customer_id, "customer_session_id": customer_session_id}
-    }
+    try:
+        fields = []
+
+        # ===== 检查 customer_id =====
+        if not customer_id or customer_id == 0:
+            # 查询有可用场次的顾客
+            customers = execute_sql(
+                "SELECT DISTINCT c.id, c.nickname, c.phone "
+                "FROM customers c "
+                "JOIN customer_sessions cs ON c.id = cs.customer_id "
+                "WHERE cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0 AND c.is_deleted = 0 "
+                "ORDER BY c.nickname",
+                {"sid": shop_id}
+            )
+            if not customers:
+                return {"type": "error", "message": "当前没有待核销的顾客"}
+            fields.append({
+                "name": "customer_id",
+                "type": "select",
+                "label": "选择顾客",
+                "required": True,
+                "options": [
+                    {"value": str(c["id"]), "label": f"{c['nickname']} ({c['phone'] or '无手机'})"}
+                    for c in customers
+                ],
+            })
+
+        # ===== 检查 customer_session_id =====
+        if not customer_session_id or customer_session_id == 0:
+            # 如果已选顾客，查询该顾客的可用场次
+            if customer_id and customer_id != 0:
+                sessions = execute_sql(
+                    "SELECT cs.id, p.name as package_name, cs.session_date "
+                    "FROM customer_sessions cs "
+                    "JOIN purchases pu ON cs.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "WHERE cs.customer_id = :cid AND cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0 "
+                    "ORDER BY cs.session_date DESC",
+                    {"cid": customer_id, "sid": shop_id}
+                )
+            else:
+                # 未选顾客，查询所有可用场次
+                sessions = execute_sql(
+                    "SELECT cs.id, c.nickname, p.name as package_name, cs.session_date "
+                    "FROM customer_sessions cs "
+                    "JOIN purchases pu ON cs.purchase_id = pu.id "
+                    "JOIN packages p ON pu.package_id = p.id "
+                    "LEFT JOIN customers c ON cs.customer_id = c.id "
+                    "WHERE cs.shop_id = :sid AND cs.status = 1 AND cs.is_deleted = 0 "
+                    "ORDER BY cs.session_date DESC",
+                    {"sid": shop_id}
+                )
+            if not sessions:
+                return {"type": "error", "message": "当前没有可用的场次"}
+            fields.append({
+                "name": "customer_session_id",
+                "type": "select",
+                "label": "选择场次",
+                "required": True,
+                "options": [
+                    {"value": str(s["id"]), "label": f"{s.get('nickname', '')} - {s['package_name']} ({s['session_date']})"}
+                    for s in sessions
+                ],
+            })
+
+        # ===== 有缺失字段 → 返回填写表单 =====
+        if fields:
+            return {
+                "type": "confirm",
+                "tool_name": "game_session_checkin",
+                "title": "核销入座",
+                "message": "请选择要核销的场次：",
+                "details": {},
+                "fields": fields,
+                "buttons": [
+                    {"type": "confirm", "label": "确认核销"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "game_session_checkin",
+                "params": {"shop_id": shop_id, **({"customer_id": customer_id} if customer_id else {}), **({"customer_session_id": customer_session_id} if customer_session_id else {})},
+            }
+
+        # ===== 参数齐全，查询场次详情 =====
+        session_sql = """
+            SELECT cs.id, cs.status, p.name as package_name, p.duration_minutes,
+                   cs.session_date, c.nickname, c.phone
+            FROM customer_sessions cs
+            JOIN purchases pu ON cs.purchase_id = pu.id
+            JOIN packages p ON pu.package_id = p.id
+            LEFT JOIN customers c ON cs.customer_id = c.id
+            WHERE cs.id = :customer_session_id AND cs.shop_id = :shop_id AND cs.is_deleted = 0
+        """
+        session = execute_sql(session_sql, {"customer_session_id": customer_session_id, "shop_id": shop_id})
+        if not session:
+            return {"type": "error", "message": "场次不存在"}
+        info = session[0]
+        if info["status"] != 1:
+            status_names = {2: "已核销", 3: "已过期", 4: "已退款"}
+            return {"type": "error", "message": f"该场次{status_names.get(info['status'], '不可用')}"}
+        return {
+            "type": "confirm",
+            "tool_name": "game_session_checkin",
+            "title": "确认核销",
+            "message": f"确定要为 {info['nickname']} 核销套餐吗？",
+            "details": {
+                "顾客": info["nickname"], "手机": info["phone"] or "未绑定",
+                "套餐": info["package_name"], "时长": f"{info['duration_minutes']}分钟",
+                "场次日期": str(info["session_date"])
+            },
+            "fields": [],
+            "buttons": [
+                {"type": "confirm", "label": "确认核销"},
+                {"type": "cancel", "label": "取消"}
+            ],
+            "action": "game_session_checkin",
+            "params": {"shop_id": shop_id, "customer_id": customer_id, "customer_session_id": customer_session_id}
+        }
+    except Exception as e:
+        return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
 @tool(args_schema=GameSessionFinishInput)
 def game_session_finish(shop_id: int, game_session_id: int) -> dict:
     """结束游玩。返回确认框，需用户确认后执行。"""
-    session_sql = """
-        SELECT gs.id, c.nickname as customer_name, p.name as package_name,
-               gs.start_time, gs.status
-        FROM game_sessions gs
-        LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id
-        LEFT JOIN purchases pu ON cs.purchase_id = pu.id
-        LEFT JOIN packages p ON pu.package_id = p.id
-        LEFT JOIN customers c ON pu.customer_id = c.id
-        WHERE gs.id = :game_session_id AND gs.shop_id = :shop_id
-    """
-    session = execute_sql(session_sql, {"game_session_id": game_session_id, "shop_id": shop_id})
-    if not session:
-        return {"type": "error", "message": "游戏场次不存在"}
-    info = session[0]
-    if info["status"] != 1:
-        return {"type": "error", "message": "该场次已结束"}
-    return {
-        "type": "confirm",
-        "tool_name": "game_session_finish",
-        "title": "确认结束游玩",
-        "message": f"确定要结束 {info['customer_name']} 的游玩吗？",
-        "details": {
-            "顾客": info["customer_name"], "套餐": info["package_name"],
-            "开始时间": str(info["start_time"])
-        },
-        "fields": [],
-        "buttons": [
-            {"type": "confirm", "label": "确认结束"},
-            {"type": "cancel", "label": "取消"}
-        ],
-        "action": "game_session_finish",
-        "params": {"shop_id": shop_id, "game_session_id": game_session_id}
-    }
+    try:
+        # ===== 参数完整性检查 =====
+        if not game_session_id or game_session_id == 0:
+            # 查询进行中的场次
+            sessions = execute_sql(
+                "SELECT gs.id, c.nickname, p.name as package_name, gs.start_time "
+                "FROM game_sessions gs "
+                "LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id "
+                "LEFT JOIN purchases pu ON cs.purchase_id = pu.id "
+                "LEFT JOIN packages p ON pu.package_id = p.id "
+                "LEFT JOIN customers c ON pu.customer_id = c.id "
+                "WHERE gs.shop_id = :sid AND gs.status = 1 AND (gs.is_deleted = 0 OR gs.is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            if not sessions:
+                return {"type": "error", "message": "当前没有进行中的场次"}
+            return {
+                "type": "confirm",
+                "tool_name": "game_session_finish",
+                "title": "结束游玩",
+                "message": "请选择要结束的场次：",
+                "details": {},
+                "fields": [
+                    {
+                        "name": "game_session_id",
+                        "type": "select",
+                        "label": "选择场次",
+                        "required": True,
+                        "options": [
+                            {"value": str(s["id"]), "label": f"{s['nickname'] or '未知'} - {s['package_name']} ({s['start_time']})"}
+                            for s in sessions
+                        ],
+                    },
+                ],
+                "buttons": [
+                    {"type": "confirm", "label": "确认结束"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "game_session_finish",
+                "params": {"shop_id": shop_id},
+            }
+
+        # ===== 参数齐全 =====
+        session_sql = """
+            SELECT gs.id, c.nickname as customer_name, p.name as package_name,
+                   gs.start_time, gs.status
+            FROM game_sessions gs
+            LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id
+            LEFT JOIN purchases pu ON cs.purchase_id = pu.id
+            LEFT JOIN packages p ON pu.package_id = p.id
+            LEFT JOIN customers c ON pu.customer_id = c.id
+            WHERE gs.id = :game_session_id AND gs.shop_id = :shop_id
+        """
+        session = execute_sql(session_sql, {"game_session_id": game_session_id, "shop_id": shop_id})
+        if not session:
+            return {"type": "error", "message": "游戏场次不存在"}
+        info = session[0]
+        if info["status"] != 1:
+            return {"type": "error", "message": "该场次已结束"}
+        return {
+            "type": "confirm",
+            "tool_name": "game_session_finish",
+            "title": "确认结束游玩",
+            "message": f"确定要结束 {info['customer_name']} 的游玩吗？",
+            "details": {
+                "顾客": info["customer_name"], "套餐": info["package_name"],
+                "开始时间": str(info["start_time"])
+            },
+            "fields": [],
+            "buttons": [
+                {"type": "confirm", "label": "确认结束"},
+                {"type": "cancel", "label": "取消"}
+            ],
+            "action": "game_session_finish",
+            "params": {"shop_id": shop_id, "game_session_id": game_session_id}
+        }
+    except Exception as e:
+        return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
 # ==================== 执行函数（确认后调用，带事务）====================
