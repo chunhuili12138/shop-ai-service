@@ -180,87 +180,178 @@ def query_refunds(shop_id: int, purchase_id: Optional[int] = None, status: Optio
 @tool(args_schema=RefundApproveInput)
 def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -> dict:
     """审批退款（批准）。返回确认框，需用户确认后执行。"""
-    refund_sql = """
-        SELECT rr.id, rr.purchase_id, c.nickname as customer_name,
-               p.name as package_name, rr.refund_amount, rr.deducted_amount,
-               rr.reason, rr.status
-        FROM refund_records rr
-        JOIN purchases pu ON rr.purchase_id = pu.id
-        JOIN packages p ON pu.package_id = p.id
-        LEFT JOIN customers c ON pu.customer_id = c.id
-        WHERE rr.id = :refund_id AND pu.shop_id = :shop_id AND rr.is_deleted = 0
-    """
-    refund = execute_sql(refund_sql, {"refund_id": refund_id, "shop_id": shop_id})
-    if not refund:
-        return {"type": "error", "message": "退款记录不存在"}
-    info = refund[0]
-    if info["status"] != 1:
-        status_names = {2: "已完成", 3: "已拒绝"}
-        return {"type": "error", "message": f"该退款已{status_names.get(info['status'], '处理完毕')}"}
-    return {
-        "type": "confirm",
-        "tool_name": "refund_approve",
-        "title": "确认批准退款",
-        "message": f"确定要批准 {info['customer_name']} 的退款申请吗？",
-        "details": {
-            "顾客": info["customer_name"],
-            "套餐": info["package_name"],
-            "退款金额": f"¥{info['refund_amount']:.2f}",
-            "扣除金额": f"¥{info['deducted_amount']:.2f}",
-            "退款原因": info["reason"] or "无",
-        },
-        "fields": [
-            {"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""}
-        ],
-        "buttons": [
-            {"type": "confirm", "label": "确认批准"},
-            {"type": "cancel", "label": "取消"}
-        ],
-        "action": "refund_approve",
-        "params": {"shop_id": shop_id, "refund_id": refund_id}
-    }
+    try:
+        # ===== 参数完整性检查：refund_id =====
+        if not refund_id or refund_id == 0:
+            pending = execute_sql(
+                "SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount, rr.reason "
+                "FROM refund_records rr "
+                "JOIN purchases pu ON rr.purchase_id = pu.id "
+                "JOIN packages p ON pu.package_id = p.id "
+                "LEFT JOIN customers c ON pu.customer_id = c.id "
+                "WHERE pu.shop_id = :sid AND rr.status = 1 AND rr.is_deleted = 0 "
+                "ORDER BY rr.created_at DESC",
+                {"sid": shop_id}
+            )
+            if not pending:
+                return {"type": "error", "message": "当前没有待处理的退款申请"}
+            return {
+                "type": "confirm",
+                "tool_name": "refund_approve",
+                "title": "批准退款",
+                "message": "请选择要批准的退款记录：",
+                "details": {},
+                "fields": [
+                    {
+                        "name": "refund_id",
+                        "type": "select",
+                        "label": "退款记录",
+                        "required": True,
+                        "options": [
+                            {"value": r["id"], "label": f"{r['nickname']} - {r['package_name']} ¥{r['refund_amount']:.2f} ({r['reason'] or '无原因'})"}
+                            for r in pending
+                        ],
+                    },
+                    {"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""},
+                ],
+                "buttons": [
+                    {"type": "confirm", "label": "确认批准"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "refund_approve",
+                "params": {"shop_id": shop_id},
+            }
+
+        # ===== 参数齐全 =====
+        refund_sql = """
+            SELECT rr.id, rr.purchase_id, c.nickname as customer_name,
+                   p.name as package_name, rr.refund_amount, rr.deducted_amount,
+                   rr.reason, rr.status
+            FROM refund_records rr
+            JOIN purchases pu ON rr.purchase_id = pu.id
+            JOIN packages p ON pu.package_id = p.id
+            LEFT JOIN customers c ON pu.customer_id = c.id
+            WHERE rr.id = :refund_id AND pu.shop_id = :shop_id AND rr.is_deleted = 0
+        """
+        refund = execute_sql(refund_sql, {"refund_id": refund_id, "shop_id": shop_id})
+        if not refund:
+            return {"type": "error", "message": "退款记录不存在"}
+        info = refund[0]
+        if info["status"] != 1:
+            status_names = {2: "已完成", 3: "已拒绝"}
+            return {"type": "error", "message": f"该退款已{status_names.get(info['status'], '处理完毕')}"}
+        return {
+            "type": "confirm",
+            "tool_name": "refund_approve",
+            "title": "确认批准退款",
+            "message": f"确定要批准 {info['customer_name']} 的退款申请吗？",
+            "details": {
+                "顾客": info["customer_name"],
+                "套餐": info["package_name"],
+                "退款金额": f"¥{info['refund_amount']:.2f}",
+                "扣除金额": f"¥{info['deducted_amount']:.2f}",
+                "退款原因": info["reason"] or "无",
+            },
+            "fields": [
+                {"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""}
+            ],
+            "buttons": [
+                {"type": "confirm", "label": "确认批准"},
+                {"type": "cancel", "label": "取消"}
+            ],
+            "action": "refund_approve",
+            "params": {"shop_id": shop_id, "refund_id": refund_id}
+        }
+    except Exception as e:
+        return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
 @tool(args_schema=RefundRejectInput)
 def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) -> dict:
     """审批退款（拒绝）。返回确认框，需用户确认后执行。"""
-    refund_sql = """
-        SELECT rr.id, rr.purchase_id, c.nickname as customer_name,
-               p.name as package_name, rr.refund_amount, rr.reason, rr.status
-        FROM refund_records rr
-        JOIN purchases pu ON rr.purchase_id = pu.id
-        JOIN packages p ON pu.package_id = p.id
-        LEFT JOIN customers c ON pu.customer_id = c.id
-        WHERE rr.id = :refund_id AND pu.shop_id = :shop_id AND rr.is_deleted = 0
-    """
-    refund = execute_sql(refund_sql, {"refund_id": refund_id, "shop_id": shop_id})
-    if not refund:
-        return {"type": "error", "message": "退款记录不存在"}
-    info = refund[0]
-    if info["status"] != 1:
-        status_names = {2: "已完成", 3: "已拒绝"}
-        return {"type": "error", "message": f"该退款已{status_names.get(info['status'], '处理完毕')}"}
-    return {
-        "type": "confirm",
-        "tool_name": "refund_reject",
-        "title": "确认拒绝退款",
-        "message": f"确定要拒绝 {info['customer_name']} 的退款申请吗？",
-        "details": {
-            "顾客": info["customer_name"],
-            "套餐": info["package_name"],
-            "退款金额": f"¥{info['refund_amount']:.2f}",
-            "原退款原因": info["reason"] or "无",
-        },
-        "fields": [
-            {"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝原因", "value": reason or ""}
-        ],
-        "buttons": [
-            {"type": "confirm", "label": "确认拒绝"},
-            {"type": "cancel", "label": "取消"}
-        ],
-        "action": "refund_reject",
-        "params": {"shop_id": shop_id, "refund_id": refund_id}
-    }
+    try:
+        # ===== 参数完整性检查：refund_id =====
+        if not refund_id or refund_id == 0:
+            # 查询待处理退款列表
+            pending = execute_sql(
+                "SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount, rr.reason "
+                "FROM refund_records rr "
+                "JOIN purchases pu ON rr.purchase_id = pu.id "
+                "JOIN packages p ON pu.package_id = p.id "
+                "LEFT JOIN customers c ON pu.customer_id = c.id "
+                "WHERE pu.shop_id = :sid AND rr.status = 1 AND rr.is_deleted = 0 "
+                "ORDER BY rr.created_at DESC",
+                {"sid": shop_id}
+            )
+            if not pending:
+                return {"type": "error", "message": "当前没有待处理的退款申请"}
+            return {
+                "type": "confirm",
+                "tool_name": "refund_reject",
+                "title": "拒绝退款",
+                "message": "请选择要拒绝的退款记录：",
+                "details": {},
+                "fields": [
+                    {
+                        "name": "refund_id",
+                        "type": "select",
+                        "label": "退款记录",
+                        "required": True,
+                        "options": [
+                            {"value": r["id"], "label": f"{r['nickname']} - {r['package_name']} ¥{r['refund_amount']:.2f} ({r['reason'] or '无原因'})"}
+                            for r in pending
+                        ],
+                    },
+                    {"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝原因", "value": reason or ""},
+                ],
+                "buttons": [
+                    {"type": "confirm", "label": "确认拒绝"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "refund_reject",
+                "params": {"shop_id": shop_id},
+            }
+
+        # ===== 参数齐全，查询退款详情 =====
+        refund_sql = """
+            SELECT rr.id, rr.purchase_id, c.nickname as customer_name,
+                   p.name as package_name, rr.refund_amount, rr.reason, rr.status
+            FROM refund_records rr
+            JOIN purchases pu ON rr.purchase_id = pu.id
+            JOIN packages p ON pu.package_id = p.id
+            LEFT JOIN customers c ON pu.customer_id = c.id
+            WHERE rr.id = :refund_id AND pu.shop_id = :shop_id AND rr.is_deleted = 0
+        """
+        refund = execute_sql(refund_sql, {"refund_id": refund_id, "shop_id": shop_id})
+        if not refund:
+            return {"type": "error", "message": "退款记录不存在"}
+        info = refund[0]
+        if info["status"] != 1:
+            status_names = {2: "已完成", 3: "已拒绝"}
+            return {"type": "error", "message": f"该退款已{status_names.get(info['status'], '处理完毕')}"}
+        return {
+            "type": "confirm",
+            "tool_name": "refund_reject",
+            "title": "确认拒绝退款",
+            "message": f"确定要拒绝 {info['customer_name']} 的退款申请吗？",
+            "details": {
+                "顾客": info["customer_name"],
+                "套餐": info["package_name"],
+                "退款金额": f"¥{info['refund_amount']:.2f}",
+                "原退款原因": info["reason"] or "无",
+            },
+            "fields": [
+                {"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝原因", "value": reason or ""}
+            ],
+            "buttons": [
+                {"type": "confirm", "label": "确认拒绝"},
+                {"type": "cancel", "label": "取消"}
+            ],
+            "action": "refund_reject",
+            "params": {"shop_id": shop_id, "refund_id": refund_id}
+        }
+    except Exception as e:
+        return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
 @tool(args_schema=GameSessionCheckinInput)

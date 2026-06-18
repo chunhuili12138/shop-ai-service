@@ -70,22 +70,103 @@ def query_coupons(shop_id: int, status: Optional[str] = None) -> str:
 @tool(args_schema=GrantCouponInput)
 def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
     """发放优惠券给顾客。返回确认框，需用户确认后执行。"""
-    coupon_sql = """
-        SELECT id, name, remain_stock, valid_days, is_active
-        FROM coupons WHERE shop_id = :shop_id AND id = :coupon_id
-    """
     try:
-        coupon_results = execute_sql(coupon_sql, {"shop_id": shop_id, "coupon_id": coupon_id})
-        if not coupon_results:
-            return {"type": "error", "message": "优惠券不存在"}
-        coupon = coupon_results[0]
-        if coupon["is_active"] != 1:
-            return {"type": "error", "message": "该优惠券已禁用"}
+        fields = []
+
+        # ===== 检查 coupon_id =====
+        coupon_info = None
+        if not coupon_id or coupon_id == 0:
+            available = execute_sql(
+                "SELECT id, name, type, value, remain_stock, valid_days "
+                "FROM coupons WHERE shop_id = :sid AND is_active = 1 AND is_deleted = 0 "
+                "ORDER BY created_at DESC",
+                {"sid": shop_id}
+            )
+            if not available:
+                return {"type": "error", "message": "当前没有可用的优惠券"}
+            fields.append({
+                "name": "coupon_id",
+                "type": "select",
+                "label": "选择优惠券",
+                "required": True,
+                "options": [
+                    {"value": c["id"], "label": f"{c['name']} (¥{c['value']}, 库存{c['remain_stock']})"}
+                    for c in available
+                ],
+            })
+        else:
+            # coupon_id 已提供，查询确认
+            coupon_info = execute_sql(
+                "SELECT id, name, remain_stock, valid_days, is_active "
+                "FROM coupons WHERE shop_id = :sid AND id = :cid",
+                {"sid": shop_id, "cid": coupon_id}
+            )
+            if not coupon_info:
+                return {"type": "error", "message": f"优惠券 ID {coupon_id} 不存在"}
+            if coupon_info[0]["is_active"] != 1:
+                return {"type": "error", "message": "该优惠券已禁用"}
+
+        # ===== 检查 customer_ids =====
+        if not customer_ids or customer_ids.strip() == "":
+            customers = execute_sql(
+                "SELECT id, nickname, phone FROM customers "
+                "WHERE shop_id = :sid AND is_deleted = 0 ORDER BY nickname",
+                {"sid": shop_id}
+            )
+            if not customers:
+                return {"type": "error", "message": "当前没有顾客"}
+            fields.append({
+                "name": "customer_ids",
+                "type": "multi_select",
+                "label": "选择顾客",
+                "required": True,
+                "options": [
+                    {"value": "ALL", "label": f"所有顾客（{len(customers)}人）"},
+                ] + [
+                    {"value": str(c["id"]), "label": f"{c['nickname']} ({c['phone'] or '无手机'})"}
+                    for c in customers
+                ],
+            })
+
+        # ===== 有缺失字段 → 返回填写表单 =====
+        if fields:
+            # 构建已有信息的 details
+            details = {}
+            if coupon_info:
+                details["优惠券"] = coupon_info[0]["name"]
+                details["库存"] = str(coupon_info[0]["remain_stock"])
+                details["有效期"] = f"{coupon_info[0]['valid_days']}天"
+            return {
+                "type": "confirm",
+                "tool_name": "grant_coupon",
+                "title": "发放优惠券",
+                "message": "请填写以下信息：",
+                "details": details,
+                "fields": fields,
+                "buttons": [
+                    {"type": "confirm", "label": "确认发放"},
+                    {"type": "cancel", "label": "取消"},
+                ],
+                "action": "grant_coupon",
+                "params": {"shop_id": shop_id, **({"coupon_id": coupon_id} if coupon_id else {}), **({"customer_ids": customer_ids} if customer_ids else {})},
+            }
+
+        # ===== 参数齐全，执行验证 =====
+        coupon = coupon_info[0]
+
+        if customer_ids.upper() == "ALL":
+            all_customers = execute_sql(
+                "SELECT GROUP_CONCAT(id) as ids FROM customers WHERE shop_id = :sid AND is_deleted = 0",
+                {"sid": shop_id}
+            )
+            customer_ids = str(all_customers[0]["ids"]) if all_customers and all_customers[0]["ids"] else ""
+
         id_list = [int(i.strip()) for i in customer_ids.split(",") if i.strip()]
         if not id_list:
             return {"type": "error", "message": "请提供有效的顾客ID"}
         if coupon["remain_stock"] < len(id_list):
             return {"type": "error", "message": f"库存不足，当前: {coupon['remain_stock']}，需要: {len(id_list)}"}
+
         # 检查重复领取
         placeholders = ", ".join([str(i) for i in id_list])
         dup_sql = f"""
@@ -96,6 +177,7 @@ def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
         if dup_results:
             dup_ids = [r["customer_id"] for r in dup_results]
             return {"type": "error", "message": f"顾客 {dup_ids} 已领取过该优惠券"}
+
         return {
             "type": "confirm",
             "tool_name": "grant_coupon",
