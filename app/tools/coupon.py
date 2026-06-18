@@ -68,7 +68,7 @@ def query_coupons(shop_id: int, status: Optional[str] = None) -> str:
 
 
 @tool(args_schema=GrantCouponInput)
-def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
+def grant_coupon(shop_id: int, coupon_id: Optional[int] = None, customer_ids: Optional[str] = None) -> dict:
     """发放优惠券给顾客。返回确认框，需用户确认后执行。"""
     try:
         fields = []

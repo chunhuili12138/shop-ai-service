@@ -62,7 +62,7 @@ def query_notifications(shop_id: int, recipient_type: Optional[str] = None, limi
 
 
 @tool(args_schema=SendNotificationInput)
-def send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "staff", title: str = "", content: str = "") -> dict:
+def send_notification(shop_id: int, recipient_ids: Optional[str] = None, recipient_type: str = "staff", title: Optional[str] = None, content: Optional[str] = None) -> dict:
     """发送通知。返回确认框，需用户确认后执行。"""
     try:
         fields = []

@@ -118,7 +118,7 @@ def query_low_stock(shop_id: int) -> str:
 
 
 @tool(args_schema=MaterialInboundInput)
-def material_inbound(shop_id: int, material_id: int, quantity: float, unit_price: Optional[float] = None, remark: Optional[str] = None) -> dict:
+def material_inbound(shop_id: int, material_id: Optional[int] = None, quantity: Optional[float] = None, unit_price: Optional[float] = None, remark: Optional[str] = None) -> dict:
     """
     物料入库操作。
     增加物料库存数量，记录入库流水。
@@ -228,7 +228,7 @@ def material_inbound(shop_id: int, material_id: int, quantity: float, unit_price
 
 
 @tool(args_schema=MaterialOutboundInput)
-def material_outbound(shop_id: int, material_id: int, quantity: float, remark: Optional[str] = None) -> dict:
+def material_outbound(shop_id: int, material_id: Optional[int] = None, quantity: Optional[float] = None, remark: Optional[str] = None) -> dict:
     """
     物料出库操作。
     减少物料库存数量，记录出库流水。

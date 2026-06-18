@@ -67,7 +67,7 @@ def query_feedbacks(shop_id: int, status: Optional[str] = None, limit: int = 10)
 
 
 @tool(args_schema=ReplyFeedbackInput)
-def reply_feedback(shop_id: int, feedback_id: int, reply_content: str) -> dict:
+def reply_feedback(shop_id: int, feedback_id: Optional[int] = None, reply_content: Optional[str] = None) -> dict:
     """回复顾客评价。返回确认框，需用户确认后执行。"""
     try:
         # ===== 参数完整性检查 =====
