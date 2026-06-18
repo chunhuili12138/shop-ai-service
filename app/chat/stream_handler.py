@@ -1710,7 +1710,10 @@ Router 分析: {analysis}
             for param_name, query_info in param_plan.get("from_query", {}).items():
                 extract_field = query_info.get("extract_field", param_name)
                 desc = query_info.get("description", param_name)
-                extract_fields.append((extract_field, desc))
+                extract_fields.append((extract_field, f"{desc}（名称/ALL/列表）"))
+                # 自动追加排除字段
+                extract_fields.append((f"exclude_{extract_field}_ids", f"排除的{desc}数字ID列表（数组，如[29,39,44]）"))
+                extract_fields.append((f"exclude_{extract_field}_names", f"排除的{desc}名称列表（数组，如[\"张三\",\"李四\"]）"))
 
             # user_input 字段也加入提取范围（可选，提取到则直接填入）
             for input_field in param_plan.get("user_input", []):
@@ -1730,9 +1733,15 @@ Router 分析: {analysis}
 {chr(10).join(resolution_prompt_parts)}
 
 规则:
-- 名称类字段提取文字描述（如"兑换券"、"石膏娃娃"），不是数字 ID
-- 数量/金额类字段提取数字（如"100"、"50"）
+- 名称类字段：提取文字描述（如"兑换券"、"石膏娃娃"），不是数字 ID
+- 数量/金额类字段：提取数字（如"100"、"50"）
 - 如果用户说"所有"/"全部"/"全部顾客"等，标记为 "ALL"
+- 如果用户说"除了X、Y之外"：
+  - 如果排除的是数字ID，填入 exclude_xxx_ids 数组
+  - 如果排除的是名称（如"张三"），填入 exclude_xxx_names 数组
+  - 主字段仍填 "ALL"
+- 如果用户指定了多人（如"张三和李四"、"张三、李四、王五"），主字段填数组 ["张三","李四","王五"]
+- 如果从对话历史中能找到排除信息（如之前报错提到的ID），提取到 exclude 数组
 - 如果无法确定，填 null
 - 只返回 JSON，key 是上面的字段名"""
 
@@ -1771,7 +1780,7 @@ Router 分析: {analysis}
                         return {"success": False, "result": "", "error": f"没有可用的{query_info.get('description', param_name)}"}
                     return self._build_select_response(tool_name, param_plan, param_name, all_items)
 
-            # Step 3: 用查询工具解析名称→ID
+            # Step 3: 用查询工具解析名称→ID（支持排除、多值）
             for param_name, query_info, extracted_name in missing_names:
                 # 确定实际查询工具（支持 dynamic_tool_by）
                 actual_query_tool = query_info["query_tool"]
@@ -1782,9 +1791,11 @@ Router 分析: {analysis}
                         actual_query_tool = "query_staff_list"
 
                 extra_filter = query_info.get("extra_filter", {})
-                cache_key = f"{actual_query_tool}:{extracted_name}:{str(extra_filter)}"
+                extract_field = query_info.get("extract_field", param_name)
 
-                if extracted_name.upper() == "ALL":
+                if isinstance(extracted_name, str) and extracted_name.upper() == "ALL":
+                    # === ALL 模式：查全部 ===
+                    cache_key = f"{actual_query_tool}:ALL:{str(extra_filter)}"
                     if cache_key in query_cache:
                         all_items = query_cache[cache_key]
                     else:
@@ -1794,6 +1805,12 @@ Router 分析: {analysis}
                     if not all_items:
                         return {"success": False, "result": "", "error": f"没有可用的{query_info.get('description', param_name)}"}
 
+                    # 应用排除
+                    all_items = await self._apply_exclusions(all_items, resolved_names, extract_field, actual_query_tool, shop_id)
+
+                    if not all_items:
+                        return {"success": False, "result": "", "error": f"排除后没有剩余的{query_info.get('description', param_name)}"}
+
                     if query_info.get("concat"):
                         all_ids = [str(item.get("id", "")) for item in all_items]
                         final_params[param_name] = ",".join(all_ids)
@@ -1802,7 +1819,35 @@ Router 分析: {analysis}
 
                     # 缓存 ALL 查询结果供 derived 使用
                     query_cache[f"_all_{actual_query_tool}"] = all_items
+
+                elif isinstance(extracted_name, list):
+                    # === 多值模式：分别查询每个名称，合并结果 ===
+                    all_matched_items = []
+                    for single_name in extracted_name:
+                        if not single_name or not str(single_name).strip():
+                            continue
+                        items = await self._query_tool_by_name(actual_query_tool, shop_id, str(single_name).strip(), extra_filter=extra_filter or None)
+                        if items:
+                            all_matched_items.extend(items)
+
+                    if not all_matched_items:
+                        return {"success": False, "result": "", "error": f"没有找到匹配的{query_info.get('description', param_name)}"}
+
+                    # 应用排除
+                    all_matched_items = await self._apply_exclusions(all_matched_items, resolved_names, extract_field, actual_query_tool, shop_id)
+
+                    if not all_matched_items:
+                        return {"success": False, "result": "", "error": f"排除后没有剩余的{query_info.get('description', param_name)}"}
+
+                    if query_info.get("concat"):
+                        all_ids = [str(item.get("id", "")) for item in all_matched_items]
+                        final_params[param_name] = ",".join(all_ids)
+                    else:
+                        final_params[param_name] = all_matched_items[0].get("id")
+
                 else:
+                    # === 单值模式：按名称查询 ===
+                    cache_key = f"{actual_query_tool}:{extracted_name}:{str(extra_filter)}"
                     if cache_key in query_cache:
                         items = query_cache[cache_key]
                     else:
@@ -1816,6 +1861,7 @@ Router 分析: {analysis}
                         # 缓存单条结果供 derived 使用
                         query_cache[f"_single_{actual_query_tool}"] = items[0]
                     else:
+                        # 多条匹配，返回选择框
                         return self._build_select_response(tool_name, param_plan, param_name, items)
 
             # Step 4: 处理 derived 参数
@@ -1945,6 +1991,35 @@ Router 分析: {analysis}
         except Exception as e:
             print(f"[ParamResolution] 按名称查询 {query_tool_name} 失败: {str(e)}")
             return []
+
+    async def _apply_exclusions(self, items: list, resolved_names: dict, extract_field: str, query_tool_name: str, shop_id: int) -> list:
+        """从结果列表中排除指定项（支持按 ID 排除和按名称排除）"""
+        if not items:
+            return items
+
+        exclude_ids = resolved_names.get(f"exclude_{extract_field}_ids", []) or []
+        exclude_names = resolved_names.get(f"exclude_{extract_field}_names", []) or []
+
+        # 如果有按名称排除，先查出这些名称的 ID
+        if exclude_names:
+            for name in exclude_names:
+                if name and str(name).strip():
+                    excluded_items = await self._query_tool_by_name(query_tool_name, shop_id, str(name).strip())
+                    for item in excluded_items:
+                        item_id = item.get("id")
+                        if item_id is not None and item_id not in exclude_ids:
+                            exclude_ids.append(item_id)
+
+        # 按 ID 排除（支持 int 和 str 比较）
+        if exclude_ids:
+            exclude_set = set(str(eid) for eid in exclude_ids)
+            original_count = len(items)
+            items = [item for item in items if str(item.get("id")) not in exclude_set]
+            excluded_count = original_count - len(items)
+            if excluded_count > 0:
+                print(f"[ParamResolution] 已排除 {excluded_count} 条记录，剩余 {len(items)} 条")
+
+        return items
 
     def _build_select_response(self, tool_name: str, param_plan: dict, param_name: str, items: list) -> dict:
         """构建 select 弹窗响应（返回 select_data，前端渲染 SelectCard）"""
