@@ -195,26 +195,12 @@ def send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "s
         return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
-def execute_send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "staff", title: str = "", content: str = "", operator_id: Optional[int] = None) -> str:
-    """执行发送通知（事务）"""
-    engine = get_engine()
-    try:
-        id_list = [int(i.strip()) for i in recipient_ids.split(",") if i.strip()]
-        if not id_list:
-            return "请提供有效的接收者ID"
-        rt = 1 if recipient_type == "staff" else 2
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            success = 0
-            for rid in id_list:
-                try:
-                    conn.execute(text(
-                        "INSERT INTO notification_logs (shop_id, recipient_type, recipient_id, channel, title, content, status, created_at) "
-                        "VALUES (:sid, :rt, :rid, 1, :title, :content, 0, NOW())"
-                    ), {"sid": shop_id, "rt": rt, "rid": rid, "title": title, "content": content})
-                    success += 1
-                except Exception:
-                    pass
-        return f"发送完成: 成功 {success} 条"
-    except Exception as e:
-        return f"发送失败: {str(e)}"
+def execute_send_notification(shop_id: int, recipient_ids: str, recipient_type: str = "staff", title: str = "", content: str = "", operator_id: Optional[int] = None, token: str = None) -> str:
+    """执行发送通知（调用 Java 后端 API）"""
+    from app.common.backend_client import send_notification
+    rt = 1 if recipient_type == "staff" else 2
+    result = send_notification(token=token, shop_id=shop_id, recipient_ids=recipient_ids, recipient_type=rt, title=title, content=content)
+    if result.get("success"):
+        return result.get("msg", "发送成功")
+    else:
+        return result.get("msg", "发送失败")

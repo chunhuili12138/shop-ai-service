@@ -145,22 +145,11 @@ def reply_feedback(shop_id: int, feedback_id: int, reply_content: Optional[str] 
         return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
-def execute_reply_feedback(shop_id: int, feedback_id: int, reply_content: str, operator_id: Optional[int] = None) -> str:
-    """执行回复评价（事务）"""
-    engine = get_engine()
-    try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            check = conn.execute(text(
-                "SELECT id, status FROM feedbacks WHERE id = :fid AND shop_id = :sid AND (is_deleted = 0 OR is_deleted IS NULL) FOR UPDATE"
-            ), {"fid": feedback_id, "sid": shop_id}).fetchone()
-            if not check:
-                return "评价不存在"
-            if check[1] == 2:
-                return "该评价已回复"
-            conn.execute(text(
-                "UPDATE feedbacks SET reply_content = :reply, status = 2, replied_by = :oid, replied_at = NOW(), updated_at = NOW() WHERE id = :fid AND shop_id = :sid"
-            ), {"reply": reply_content, "fid": feedback_id, "sid": shop_id, "oid": operator_id})
-        return f"回复成功"
-    except Exception as e:
-        return f"回复失败: {str(e)}"
+def execute_reply_feedback(shop_id: int, feedback_id: int, reply_content: str, operator_id: Optional[int] = None, token: str = None) -> str:
+    """执行回复评价（调用 Java 后端 API）"""
+    from app.common.backend_client import reply_feedback
+    result = reply_feedback(token=token, shop_id=shop_id, feedback_id=feedback_id, reply_content=reply_content)
+    if result.get("success"):
+        return result.get("msg", "回复成功")
+    else:
+        return result.get("msg", "回复失败")

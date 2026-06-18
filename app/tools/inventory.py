@@ -341,119 +341,21 @@ def material_outbound(shop_id: int, material_id: int, quantity: float, remark: O
         return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
-def execute_material_inbound(shop_id: int, material_id: int, quantity: float, unit_price: Optional[float] = None, remark: Optional[str] = None, operator_id: Optional[int] = None) -> str:
-    """
-    执行物料入库操作（确认后调用）
-    使用事务包裹，确保库存更新和流水记录的原子性
-    """
-    from app.nl2sql.executor import get_engine
-
-    engine = get_engine()
-    try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-
-            # 更新库存
-            conn.execute(text("""
-                UPDATE inventory
-                SET quantity = quantity + :quantity
-                WHERE material_id = :material_id AND shop_id = :shop_id
-            """), {"quantity": quantity, "material_id": material_id, "shop_id": shop_id})
-
-            # 记录入库流水
-            conn.execute(text("""
-                INSERT INTO inventory_transactions
-                (shop_id, material_id, type, quantity, reference_type, remark, created_at)
-                VALUES (:shop_id, :material_id, 'inbound', :quantity, 'manual', :remark, NOW())
-            """), {
-                "shop_id": shop_id,
-                "material_id": material_id,
-                "quantity": quantity,
-                "remark": remark or "手动入库"
-            })
-
-            # 记录操作日志
-            if operator_id:
-                import json as _json
-                detail = _json.dumps({
-                    "quantity": quantity,
-                    "unit_price": unit_price,
-                    "remark": remark
-                }, ensure_ascii=False)
-                conn.execute(text("""
-                    INSERT INTO operation_logs
-                    (shop_id, operator_id, action, target_type, target_id, detail, created_at)
-                    VALUES (:shop_id, :operator_id, 'inbound', 'material', :material_id, :detail, NOW())
-                """), {
-                    "shop_id": shop_id,
-                    "operator_id": operator_id,
-                    "material_id": material_id,
-                    "detail": detail
-                })
-
-        return f"入库成功，数量: {quantity}"
-    except Exception as e:
-        return f"入库失败: {str(e)}"
+def execute_material_inbound(shop_id: int, material_id: int, quantity: float, unit_price: Optional[float] = None, remark: Optional[str] = None, operator_id: Optional[int] = None, token: str = None) -> str:
+    """执行物料入库操作（调用 Java 后端 API）"""
+    from app.common.backend_client import material_inbound
+    result = material_inbound(token=token, shop_id=shop_id, material_id=material_id, quantity=str(int(quantity)), remark=remark)
+    if result.get("success"):
+        return result.get("msg", "入库成功")
+    else:
+        return result.get("msg", "入库失败")
 
 
-def execute_material_outbound(shop_id: int, material_id: int, quantity: float, remark: Optional[str] = None, operator_id: Optional[int] = None) -> str:
-    """
-    执行物料出库操作（确认后调用）
-    使用事务包裹，确保库存更新和流水记录的原子性
-    """
-    from app.nl2sql.executor import get_engine
-
-    engine = get_engine()
-    try:
-        with engine.begin() as conn:
-            from sqlalchemy import text
-
-            # 二次检查库存（FOR UPDATE 锁行防并发超扣）
-            inv = conn.execute(text(
-                "SELECT quantity FROM inventory WHERE material_id = :mid AND shop_id = :sid FOR UPDATE"
-            ), {"mid": material_id, "sid": shop_id}).fetchone()
-            if not inv:
-                return "库存记录不存在"
-            if inv[0] < quantity:
-                return f"库存不足，当前: {inv[0]}，需要: {quantity}"
-
-            # 更新库存
-            conn.execute(text("""
-                UPDATE inventory
-                SET quantity = quantity - :quantity
-                WHERE material_id = :material_id AND shop_id = :shop_id
-            """), {"quantity": quantity, "material_id": material_id, "shop_id": shop_id})
-
-            # 记录出库流水
-            conn.execute(text("""
-                INSERT INTO inventory_transactions
-                (shop_id, material_id, type, quantity, reference_type, remark, created_at)
-                VALUES (:shop_id, :material_id, 'outbound', :quantity, 'manual', :remark, NOW())
-            """), {
-                "shop_id": shop_id,
-                "material_id": material_id,
-                "quantity": quantity,
-                "remark": remark or "手动出库"
-            })
-
-            # 记录操作日志
-            if operator_id:
-                import json as _json
-                detail = _json.dumps({
-                    "quantity": quantity,
-                    "remark": remark
-                }, ensure_ascii=False)
-                conn.execute(text("""
-                    INSERT INTO operation_logs
-                    (shop_id, operator_id, action, target_type, target_id, detail, created_at)
-                    VALUES (:shop_id, :operator_id, 'outbound', 'material', :material_id, :detail, NOW())
-                """), {
-                    "shop_id": shop_id,
-                    "operator_id": operator_id,
-                    "material_id": material_id,
-                    "detail": detail
-                })
-
-        return f"出库成功，数量: {quantity}"
-    except Exception as e:
-        return f"出库失败: {str(e)}"
+def execute_material_outbound(shop_id: int, material_id: int, quantity: float, remark: Optional[str] = None, operator_id: Optional[int] = None, token: str = None) -> str:
+    """执行物料出库操作（调用 Java 后端 API）"""
+    from app.common.backend_client import material_outbound
+    result = material_outbound(token=token, shop_id=shop_id, material_id=material_id, quantity=str(int(quantity)), remark=remark)
+    if result.get("success"):
+        return result.get("msg", "出库成功")
+    else:
+        return result.get("msg", "出库失败")

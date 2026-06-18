@@ -106,3 +106,60 @@ def finish_game_session(token: str, shop_id: int, game_session_id: int) -> dict:
         token=token, shop_id=shop_id,
         params={"gameSessionId": str(game_session_id)},
     )
+
+
+def grant_coupon(token: str, shop_id: int, coupon_id: int, customer_ids: str) -> dict:
+    """发放优惠券"""
+    return call_backend_api_sync(
+        "POST", "/api/couponUsagesGrant",
+        token=token, shop_id=shop_id,
+        params={"couponId": str(coupon_id), "customerIds": customer_ids},
+    )
+
+
+def material_inbound(token: str, shop_id: int, material_id: int, quantity: str, remark: str = None) -> dict:
+    """物料入库"""
+    data = {"materialId": str(material_id), "quantity": quantity}
+    if remark:
+        data["remark"] = remark
+    return call_backend_api_sync(
+        "POST", "/api/inventoryInbound",
+        token=token, shop_id=shop_id,
+        params=data,
+    )
+
+
+def material_outbound(token: str, shop_id: int, material_id: int, quantity: str, remark: str = None) -> dict:
+    """物料出库"""
+    data = {"materialId": str(material_id), "quantity": quantity}
+    if remark:
+        data["remark"] = remark
+    return call_backend_api_sync(
+        "POST", "/api/inventoryOutbound",
+        token=token, shop_id=shop_id,
+        params=data,
+    )
+
+
+def reply_feedback(token: str, shop_id: int, feedback_id: int, reply_content: str) -> dict:
+    """回复评价"""
+    return call_backend_api_sync(
+        "PUT", "/api/feedbacks/reply",
+        token=token, shop_id=shop_id,
+        params={"feedbackId": str(feedback_id), "replyContent": reply_content},
+    )
+
+
+def send_notification(token: str, shop_id: int, recipient_ids: str, recipient_type: int, title: str, content: str) -> dict:
+    """发送通知"""
+    return call_backend_api_sync(
+        "POST", "/api/notificationsSend",
+        token=token, shop_id=shop_id,
+        params={
+            "recipientIds": recipient_ids,
+            "recipientType": str(recipient_type),
+            "channel": "3",
+            "title": title,
+            "content": content,
+        },
+    )

@@ -303,10 +303,9 @@ async def confirm_action(
         params["operator_id"] = user_context.user_id
         params["token"] = token
 
-        # 5. 执行操作（execute 函数不接受 token 参数，调用前移除）
-        execute_params = {k: v for k, v in params.items() if k != "token"}
-        logger.info(f"[Confirm] 执行 {request.action}, params={execute_params}")
-        result = execute_func(**execute_params)
+        # 5. 执行操作
+        logger.info(f"[Confirm] 执行 {request.action}, params={params}")
+        result = execute_func(**params)
         logger.info(f"[Confirm] {request.action} 返回: {result}")
 
         # 6. 查询被操作记录详情，构建完整结果文本

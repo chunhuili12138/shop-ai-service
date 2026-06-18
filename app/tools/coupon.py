@@ -201,42 +201,14 @@ def grant_coupon(shop_id: int, coupon_id: int, customer_ids: str) -> dict:
         return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
-def execute_grant_coupon(shop_id: int, coupon_id: int, customer_ids: str, operator_id: Optional[int] = None) -> str:
-    """执行发放优惠券（事务）"""
-    engine = get_engine()
-    try:
-        id_list = [int(i.strip()) for i in customer_ids.split(",") if i.strip()]
-        if not id_list:
-            return "请提供有效的顾客ID"
-        with engine.begin() as conn:
-            from sqlalchemy import text
-            # 锁定优惠券行
-            coupon = conn.execute(text(
-                "SELECT id, name, remain_stock, valid_days FROM coupons WHERE id = :cid AND shop_id = :sid FOR UPDATE"
-            ), {"cid": coupon_id, "sid": shop_id}).fetchone()
-            if not coupon:
-                return "优惠券不存在"
-            if coupon[2] < len(id_list):
-                return f"库存不足，当前: {coupon[2]}，需要: {len(id_list)}"
-            # 批量插入
-            success = 0
-            for cid in id_list:
-                try:
-                    conn.execute(text(
-                        "INSERT INTO coupon_usages (coupon_id, customer_id, status, expires_at, created_at) "
-                        "VALUES (:coupon_id, :customer_id, 1, DATE_ADD(NOW(), INTERVAL :valid_days DAY), NOW())"
-                    ), {"coupon_id": coupon_id, "customer_id": cid, "valid_days": coupon[3]})
-                    success += 1
-                except Exception:
-                    pass
-            # 更新库存
-            if success > 0:
-                conn.execute(text(
-                    "UPDATE coupons SET remain_stock = remain_stock - :cnt WHERE id = :cid"
-                ), {"cnt": success, "cid": coupon_id})
-        return f"发放完成: 成功 {success} 张"
-    except Exception as e:
-        return f"发放失败: {str(e)}"
+def execute_grant_coupon(shop_id: int, coupon_id: int, customer_ids: str, operator_id: Optional[int] = None, token: str = None) -> str:
+    """执行发放优惠券（调用 Java 后端 API）"""
+    from app.common.backend_client import grant_coupon
+    result = grant_coupon(token=token, shop_id=shop_id, coupon_id=coupon_id, customer_ids=customer_ids)
+    if result.get("success"):
+        return result.get("msg", "发放成功")
+    else:
+        return result.get("msg", "发放失败")
 
 
 @tool(args_schema=CouponUsagesQueryInput)
