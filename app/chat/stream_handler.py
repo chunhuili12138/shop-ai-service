@@ -1760,12 +1760,26 @@ Router 分析: {analysis}
             resp = await llm.ainvoke([HumanMessage(content=system_prompt)])
             content = resp.content.strip()
 
-            # 解析 LLM 返回的 JSON
-            if "{" in content:
-                json_str = content[content.index("{"):content.rindex("}") + 1]
-                import json as _json
-                plan = _json.loads(json_str)
-            else:
+            # 解析 LLM 返回的 JSON（带重试）
+            plan = None
+            max_retries = 2
+            for attempt in range(max_retries + 1):
+                if "{" in content:
+                    json_str = content[content.index("{"):content.rindex("}") + 1]
+                    import json as _json
+                    try:
+                        plan = _json.loads(json_str)
+                        break
+                    except _json.JSONDecodeError:
+                        pass
+                
+                if attempt < max_retries:
+                    print(f"[AgentLoop] JSON 解析失败，重试 {attempt + 1}/{max_retries}")
+                    retry_prompt = system_prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字。"
+                    resp = await llm.ainvoke([HumanMessage(content=retry_prompt)])
+                    content = resp.content.strip()
+            
+            if not plan:
                 plan = {"thought": "无法解析", "params": {}}
 
             print(f"[AgentLoop] {tool_name} plan: {plan}")
@@ -1826,6 +1840,12 @@ Router 分析: {analysis}
                         print(f"[AgentLoop] {param_name} 无法确定，留空让工具处理")
                     elif on_empty == "error":
                         return {"success": False, "result": "", "error": f"无法确定参数 {param_name}"}
+
+            # 检查必要参数是否齐全（如果 LLM plan 为空或缺失参数，自动查询让用户选择）
+            for param_name, param_info in params_info.items():
+                if param_name not in final_params and param_info.get("required", True):
+                    print(f"[AgentLoop] 必要参数 {param_name} 缺失，查询所有选项让用户选择")
+                    return await self._build_agent_loop_select_all(tool_name, param_name, params_config, shop_id)
 
             # 调用目标工具
             print(f"[AgentLoop] 参数解析完成: {final_params}")
