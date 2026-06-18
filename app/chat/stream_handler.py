@@ -2039,6 +2039,10 @@ Router 分析: {analysis}
             from app.tools import TOOL_MAP
             tool = TOOL_MAP.get(tool_name)
             if not tool:
+                # 查询工具找不到时，fallback 到 NL2SQL
+                if tool_name.startswith("query_"):
+                    print(f"[StreamHandler] 查询工具 {tool_name} 不存在，fallback 到 NL2SQL")
+                    return await self._execute_step_nl2sql(f"查询: {message}", message)
                 return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
             return await self._call_tool_direct(tool, tool_name, message, route_context)
 
