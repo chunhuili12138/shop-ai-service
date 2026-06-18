@@ -1659,6 +1659,312 @@ Router 分析: {analysis}
 
         return params
 
+    async def _execute_with_agent_loop(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+        """
+        Agent Loop 方式执行工具（LLM 自主规划参数获取）
+
+        流程：
+        1. 构建 prompt（用户消息 + 工具需求 + 可用查询工具）
+        2. LLM 生成 plan（哪些参数怎么获取）
+        3. 执行 plan 中的每一步
+        4. 如果需要用户选择 → 返回 select 弹窗
+        5. 参数齐全或无法继续 → 调用目标工具
+
+        Args:
+            tool_name: 工具名称
+            message: 用户原始消息
+            route_context: 路由上下文
+
+        Returns:
+            {"success": bool, "result": str, "error": str, "confirm_data": dict, "select_data": dict}
+        """
+        t0 = time.time()
+        try:
+            from app.tools import TOOL_MAP
+            from app.tools.tool_requirements import TOOL_REQUIREMENTS
+
+            tool = TOOL_MAP.get(tool_name)
+            if not tool:
+                return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
+
+            requirements = TOOL_REQUIREMENTS.get(tool_name)
+            if not requirements:
+                # 没有 Agent Loop 配置，走原有 param_plans 流程
+                return await self._execute_with_param_resolution(tool_name, message, route_context)
+
+            # 构建 Agent Loop prompt
+            history_text = self._get_history_text()
+            system_prompt = f"""你是参数解析助手。用户想要执行 {tool_name} 操作，你需要帮他解析出所需的参数。
+
+## 用户消息
+{message}
+
+{f"## 对话历史{chr(10)}{history_text}" if history_text else ""}
+
+## 工具参数需求
+{requirements}
+
+## 输出格式
+分析用户消息，规划如何获取每个参数。返回 JSON：
+
+{{
+  "thought": "简要分析思路",
+  "params": {{
+    "param_name": {{
+      "value": "直接值（如果能从用户消息中确定）",
+      "action": "query|nl2sql|skip",
+      "description": "查询描述（action=nl2sql时用自然语言描述查询需求）",
+      "on_empty": "select|skip|error"
+    }}
+  }}
+}}
+
+规则：
+- 如果用户明确指定了值（如名称、ID、数量），直接填入 value
+- 如果需要查询，action 填 "nl2sql"，description 用自然语言描述查询需求
+- 如果无法确定，action 填 "skip"，on_empty 填 "select"（返回列表让用户选）或 "skip"（留空让工具处理）
+- 不要编造不存在的数据
+- 只返回 JSON"""
+
+            from app.llm import get_chat_llm
+            from langchain_core.messages import HumanMessage
+
+            llm = get_chat_llm(temperature=0)
+            resp = await llm.ainvoke([HumanMessage(content=system_prompt)])
+            content = resp.content.strip()
+
+            # 解析 LLM 返回的 JSON
+            if "{" in content:
+                json_str = content[content.index("{"):content.rindex("}") + 1]
+                import json as _json
+                plan = _json.loads(json_str)
+            else:
+                plan = {"thought": "无法解析", "params": {}}
+
+            print(f"[AgentLoop] {tool_name} plan: {plan}")
+
+            # 执行 plan
+            shop_id = self.user_context.shop_id
+            final_params = {"shop_id": shop_id}
+            params_config = plan.get("params", {})
+
+            for param_name, param_plan in params_config.items():
+                value = param_plan.get("value")
+                action = param_plan.get("action", "skip")
+                on_empty = param_plan.get("on_empty", "skip")
+
+                if value is not None and str(value).strip():
+                    # 有直接值
+                    final_params[param_name] = value
+                    print(f"[AgentLoop] {param_name} = {value}（直接值）")
+                    continue
+
+                if action == "query":
+                    # 查询工具查询（暂时不实现，走 nl2sql）
+                    action = "nl2sql"
+
+                if action == "nl2sql":
+                    # NL2SQL 查询
+                    nl2sql_question = param_plan.get("description", "")
+                    if nl2sql_question:
+                        print(f"[AgentLoop] {param_name} 需要 NL2SQL: {nl2sql_question}")
+                        nl2sql_result = await self._execute_step_nl2sql(nl2sql_question, message)
+                        if nl2sql_result and nl2sql_result.get("success"):
+                            result_text = nl2sql_result.get("result", "")
+                            # 尝试从结果中提取 ID
+                            extracted_id = self._extract_id_from_nl2sql_result(result_text)
+                            if extracted_id:
+                                final_params[param_name] = extracted_id
+                                print(f"[AgentLoop] {param_name} = {extracted_id}（NL2SQL 结果）")
+                            else:
+                                # 多条结果或无法解析，返回选择
+                                if on_empty == "select":
+                                    return self._build_agent_loop_select(tool_name, param_name, result_text, params_config)
+                        else:
+                            # NL2SQL 失败
+                            if on_empty == "select":
+                                return self._build_agent_loop_select(tool_name, param_name, "查询失败，请手动选择", params_config)
+
+                if action == "skip" or param_name not in final_params:
+                    # 无法确定，根据 on_empty 处理
+                    if on_empty == "select":
+                        # 返回选择弹窗（查询所有选项）
+                        return await self._build_agent_loop_select_all(tool_name, param_name, params_config, shop_id)
+                    elif on_empty == "skip":
+                        # 留空，让工具自己处理
+                        print(f"[AgentLoop] {param_name} 无法确定，留空让工具处理")
+                    elif on_empty == "error":
+                        return {"success": False, "result": "", "error": f"无法确定参数 {param_name}"}
+
+            # 调用目标工具
+            print(f"[AgentLoop] 参数解析完成: {final_params}")
+            return await self._call_tool_direct(tool, tool_name, message, route_context, override_params=final_params)
+
+        except Exception as e:
+            duration = (time.time() - t0) * 1000
+            print(f"[AgentLoop] {tool_name} 异常({duration:.0f}ms): {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "result": "", "error": str(e)}
+
+    def _extract_id_from_nl2sql_result(self, result_text: str):
+        """从 NL2SQL 结果中提取 ID"""
+        import re
+        # 尝试提取第一个数字 ID
+        lines = result_text.strip().split("\n")
+        for line in lines:
+            # 匹配 "id: 123" 或 "| 123 |" 或 "ID: 123" 等格式
+            match = re.search(r'(?:id|ID)[:\s]*(\d+)', line)
+            if match:
+                return int(match.group(1))
+            # 匹配纯数字行
+            match = re.match(r'^\s*(\d+)\s*$', line)
+            if match:
+                return int(match.group(1))
+        return None
+
+    def _build_agent_loop_select(self, tool_name: str, param_name: str, result_text: str, params_config: dict) -> dict:
+        """构建 Agent Loop 的选择弹窗（从 NL2SQL 结果中选择）"""
+        from app.tools import TOOL_DISPLAY_NAMES
+        display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+
+        # 解析结果为选项
+        options = []
+        lines = result_text.strip().split("\n")
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith("查询") or line.startswith("找到"):
+                continue
+            # 尝试解析 "| id | name |" 格式
+            if "|" in line:
+                parts = [p.strip() for p in line.split("|") if p.strip()]
+                if len(parts) >= 2 and parts[0].isdigit():
+                    options.append({"value": parts[0], "label": " - ".join(parts[1:])})
+            # 尝试解析 "id: xxx, name: xxx" 格式
+            elif ":" in line:
+                parts = line.split(",")
+                if len(parts) >= 2:
+                    id_part = parts[0].split(":")[-1].strip()
+                    name_part = parts[1].split(":")[-1].strip()
+                    if id_part.isdigit():
+                        options.append({"value": id_part, "label": name_part})
+
+        if not options:
+            options.append({"value": "", "label": f"无可用数据: {result_text[:100]}"})
+
+        return {
+            "success": True,
+            "result": "",
+            "select_data": {
+                "type": "select",
+                "tool_name": tool_name,
+                "title": f"选择{param_name}",
+                "message": f"请选择{param_name}：",
+                "items": [{"id": opt["value"], "name": opt["label"]} for opt in options],
+                "fields": [],
+                "action": tool_name,
+                "params": {"shop_id": self.user_context.shop_id},
+            },
+            "error": "",
+        }
+
+    async def _build_agent_loop_select_all(self, tool_name: str, param_name: str, params_config: dict, shop_id: int) -> dict:
+        """查询所有选项并返回选择弹窗"""
+        from app.tools import TOOL_DISPLAY_NAMES
+        display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+
+        # 根据参数名确定查询方式
+        if param_name == "coupon_id":
+            # 查询所有优惠券
+            from app.nl2sql.executor import execute_sql
+            results = execute_sql(
+                "SELECT id, name, type, value, remain_stock FROM coupons WHERE shop_id = :sid AND is_deleted=0 AND is_active=1",
+                {"sid": shop_id}
+            )
+            if results:
+                options = [{"value": str(r["id"]), "label": f"{r['name']} (¥{r['value']}, 库存{r['remain_stock']})"} for r in results]
+            else:
+                return {"success": False, "result": "", "error": "当前没有可用的优惠券"}
+
+        elif param_name == "customer_ids":
+            # 查询所有顾客
+            from app.nl2sql.executor import execute_sql
+            results = execute_sql(
+                "SELECT id, nickname, phone FROM customers WHERE shop_id = :sid AND (is_deleted=0 OR is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            if results:
+                options = [{"value": str(r["id"]), "label": f"{r['nickname']} ({r['phone'] or '无手机'})"} for r in results]
+            else:
+                return {"success": False, "result": "", "error": "当前没有顾客"}
+
+        elif param_name == "material_id":
+            # 查询所有物料
+            from app.nl2sql.executor import execute_sql
+            results = execute_sql(
+                "SELECT m.id, m.name, m.unit, inv.quantity FROM materials m LEFT JOIN inventory inv ON m.id = inv.material_id WHERE m.shop_id = :sid AND (m.is_deleted=0 OR m.is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            if results:
+                options = [{"value": str(r["id"]), "label": f"{r['name']} (库存: {r['quantity'] or 0} {r['unit']})"} for r in results]
+            else:
+                return {"success": False, "result": "", "error": "当前没有物料"}
+
+        elif param_name == "refund_id":
+            # 查询所有待处理退款
+            from app.nl2sql.executor import execute_sql
+            results = execute_sql(
+                "SELECT rr.id, c.nickname, rr.refund_amount FROM refund_records rr LEFT JOIN customers c ON rr.customer_id = c.id WHERE rr.shop_id = :sid AND rr.status=1 AND (rr.is_deleted=0 OR rr.is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            if results:
+                options = [{"value": str(r["id"]), "label": f"{r['nickname']} - ¥{r['refund_amount']}"} for r in results]
+            else:
+                return {"success": False, "result": "", "error": "当前没有待处理的退款"}
+
+        elif param_name == "feedback_id":
+            # 查询所有待回复评价
+            from app.nl2sql.executor import execute_sql
+            results = execute_sql(
+                "SELECT f.id, c.nickname, LEFT(f.content, 30) as content FROM feedbacks f LEFT JOIN customers c ON f.customer_id = c.id WHERE f.shop_id = :sid AND f.status=1 AND (f.is_deleted=0 OR f.is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            if results:
+                options = [{"value": str(r["id"]), "label": f"{r['nickname']}: {r['content']}"} for r in results]
+            else:
+                return {"success": False, "result": "", "error": "当前没有待回复的评价"}
+
+        elif param_name == "game_session_id" or param_name == "customer_session_id":
+            # 查询所有进行中的场次
+            from app.nl2sql.executor import execute_sql
+            results = execute_sql(
+                "SELECT gs.id, c.nickname, gs.start_time FROM game_sessions gs LEFT JOIN customers c ON gs.customer_id = c.id WHERE gs.shop_id = :sid AND gs.status=1 AND (gs.is_deleted=0 OR gs.is_deleted IS NULL)",
+                {"sid": shop_id}
+            )
+            if results:
+                options = [{"value": str(r["id"]), "label": f"{r['nickname']} - {r['start_time']}"} for r in results]
+            else:
+                return {"success": False, "result": "", "error": "当前没有进行中的场次"}
+
+        else:
+            return {"success": False, "result": "", "error": f"无法自动查询参数 {param_name}"}
+
+        return {
+            "success": True,
+            "result": "",
+            "select_data": {
+                "type": "select",
+                "tool_name": tool_name,
+                "title": f"选择{param_name}",
+                "message": f"请选择{param_name}：",
+                "items": [{"id": opt["value"], "name": opt["label"]} for opt in options],
+                "fields": [],
+                "action": tool_name,
+                "params": {"shop_id": shop_id},
+            },
+            "error": "",
+        }
+
     async def _execute_with_param_resolution(self, tool_name: str, message: str, route_context: dict = None) -> dict:
         """
         带参数解析的工具执行流程
@@ -2093,7 +2399,10 @@ Router 分析: {analysis}
         """
         直接调用 TOOL_MAP 中的工具（不经过 AgentLoop）
 
-        流程：LLM 提取参数 → 查询工具解析名称→ID → 调用工具
+        流程：
+        1. 有 TOOL_REQUIREMENTS → 走 Agent Loop（LLM 自主规划参数获取）
+        2. 有 TOOL_PARAM_PLANS → 走参数解析流程（LLM 提取名称 → 查询工具解析）
+        3. 都没有 → 直接调用工具
 
         Args:
             tool_name: 工具名称
@@ -2103,23 +2412,27 @@ Router 分析: {analysis}
         Returns:
             {"success": bool, "result": str, "error": str, "confirm_data": dict}
         """
+        # 优先检查是否有 Agent Loop 配置
+        from app.tools.tool_requirements import TOOL_REQUIREMENTS
+        if tool_name in TOOL_REQUIREMENTS:
+            return await self._execute_with_agent_loop(tool_name, message, route_context)
+
         # 检查工具是否有参数解析计划
         from app.tools.param_plans import TOOL_PARAM_PLANS
-
         if tool_name in TOOL_PARAM_PLANS:
             # 有参数解析计划，走 LLM 编排流程
             return await self._execute_with_param_resolution(tool_name, message, route_context)
-        else:
-            # 没有参数解析计划，直接调用工具
-            from app.tools import TOOL_MAP
-            tool = TOOL_MAP.get(tool_name)
-            if not tool:
-                # 查询工具找不到时，fallback 到 NL2SQL
-                if tool_name.startswith("query_"):
-                    print(f"[StreamHandler] 查询工具 {tool_name} 不存在，fallback 到 NL2SQL")
-                    return await self._execute_step_nl2sql(f"查询: {message}", message)
-                return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
-            return await self._call_tool_direct(tool, tool_name, message, route_context)
+
+        # 没有配置，直接调用工具
+        from app.tools import TOOL_MAP
+        tool = TOOL_MAP.get(tool_name)
+        if not tool:
+            # 查询工具找不到时，fallback 到 NL2SQL
+            if tool_name.startswith("query_"):
+                print(f"[StreamHandler] 查询工具 {tool_name} 不存在，fallback 到 NL2SQL")
+                return await self._execute_step_nl2sql(f"查询: {message}", message)
+            return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
+        return await self._call_tool_direct(tool, tool_name, message, route_context)
 
     def _is_valid_result(self, result: str, action: str) -> bool:
 
