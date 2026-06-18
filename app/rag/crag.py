@@ -239,18 +239,18 @@ class CRAG:
         if not documents:
             return ""
 
-        # 只有一个文档时直接精炼
-        if len(documents) == 1:
-            return self.refine_knowledge(question, documents[0].page_content)
-
         try:
             llm = self._get_llm()
 
-            # 构建批量 prompt
-            docs_text = ""
-            for i, doc in enumerate(documents):
-                content = doc.page_content[:500]
-                docs_text += f"---\n文档{i+1}:\n{content}\n"
+            # 只有一个文档时也用批量 prompt（保持一致性）
+            if len(documents) == 1:
+                docs_text = f"---\n文档1:\n{documents[0].page_content[:500]}\n"
+            else:
+                # 构建批量 prompt
+                docs_text = ""
+                for i, doc in enumerate(documents):
+                    content = doc.page_content[:500]
+                    docs_text += f"---\n文档{i+1}:\n{content}\n"
 
             prompt = ChatPromptTemplate.from_template(BATCH_REFINE_PROMPT)
             chain = prompt | llm

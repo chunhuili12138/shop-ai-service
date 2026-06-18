@@ -175,7 +175,6 @@ def material_inbound(shop_id: int, material_id: int, quantity: float, unit_price
             }
 
         # ===== 参数齐全 =====
-        # ... existing code continues ...
         material_sql = """
             SELECT id, name, sku, unit
             FROM materials
