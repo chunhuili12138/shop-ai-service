@@ -1687,13 +1687,31 @@ Router 分析: {analysis}
             if not tool:
                 return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
 
-            requirements = TOOL_REQUIREMENTS.get(tool_name)
-            if not requirements:
+            tool_req = TOOL_REQUIREMENTS.get(tool_name)
+            if not tool_req or isinstance(tool_req, str):
                 # 没有 Agent Loop 配置，走原有 param_plans 流程
                 return await self._execute_with_param_resolution(tool_name, message, route_context)
 
+            # 构建参数描述（包含类型和提取方式）
+            params_info = tool_req.get("params", {})
+            params_desc_parts = []
+            for pname, pinfo in params_info.items():
+                ptype = pinfo.get("type", "str")
+                pdesc = pinfo.get("description", "")
+                pextract = pinfo.get("extract", "first")
+                prequired = pinfo.get("required", True)
+                extract_desc = {
+                    "first": "提取第一个结果",
+                    "all_concat": "提取所有结果，逗号拼接",
+                    "value": "直接使用值"
+                }.get(pextract, "提取第一个结果")
+                params_desc_parts.append(f"- {pname} ({ptype}, {'必填' if prequired else '可选'}): {pdesc} | 提取方式: {extract_desc}")
+
             # 构建 Agent Loop prompt
             history_text = self._get_history_text()
+            strategies = tool_req.get("strategies", "")
+            fallback = tool_req.get("fallback", "")
+
             system_prompt = f"""你是参数解析助手。用户想要执行 {tool_name} 操作，你需要帮他解析出所需的参数。
 
 ## 用户消息
@@ -1701,8 +1719,17 @@ Router 分析: {analysis}
 
 {f"## 对话历史{chr(10)}{history_text}" if history_text else ""}
 
+## 工具描述
+{tool_req.get('description', tool_name)}
+
 ## 工具参数需求
-{requirements}
+{chr(10).join(params_desc_parts)}
+
+## 获取策略
+{strategies}
+
+## 兜底规则
+{fallback}
 
 ## 输出格式
 分析用户消息，规划如何获取每个参数。返回 JSON：
@@ -1711,16 +1738,16 @@ Router 分析: {analysis}
   "thought": "简要分析思路",
   "params": {{
     "param_name": {{
-      "value": "直接值（如果能从用户消息中确定）",
-      "action": "query|nl2sql|skip",
-      "description": "查询描述（action=nl2sql时用自然语言描述查询需求）",
+      "value": "直接值（如果能从用户消息中确定，填入具体值）",
+      "action": "nl2sql|skip",
+      "description": "NL2SQL 查询描述（action=nl2sql 时必填，用自然语言描述查询需求）",
       "on_empty": "select|skip|error"
     }}
   }}
 }}
 
 规则：
-- 如果用户明确指定了值（如名称、ID、数量），直接填入 value
+- 如果用户明确指定了值（如名称、ID、数量），直接填入 value（注意类型：int 填数字，str 填字符串）
 - 如果需要查询，action 填 "nl2sql"，description 用自然语言描述查询需求
 - 如果无法确定，action 填 "skip"，on_empty 填 "select"（返回列表让用户选）或 "skip"（留空让工具处理）
 - 不要编造不存在的数据
@@ -1749,19 +1776,20 @@ Router 分析: {analysis}
             params_config = plan.get("params", {})
 
             for param_name, param_plan in params_config.items():
+                # 获取参数的类型和提取方式（从 requirements 中）
+                param_info = params_info.get(param_name, {})
+                param_type = param_info.get("type", "str")
+                extract_mode = param_info.get("extract", "first")
+
                 value = param_plan.get("value")
                 action = param_plan.get("action", "skip")
                 on_empty = param_plan.get("on_empty", "skip")
 
                 if value is not None and str(value).strip():
-                    # 有直接值
-                    final_params[param_name] = value
-                    print(f"[AgentLoop] {param_name} = {value}（直接值）")
+                    # 有直接值，进行类型转换
+                    final_params[param_name] = self._convert_param_type(value, param_type)
+                    print(f"[AgentLoop] {param_name} = {final_params[param_name]}（直接值，类型: {param_type}）")
                     continue
-
-                if action == "query":
-                    # 查询工具查询（暂时不实现，走 nl2sql）
-                    action = "nl2sql"
 
                 if action == "nl2sql":
                     # NL2SQL 查询
@@ -1771,27 +1799,30 @@ Router 分析: {analysis}
                         nl2sql_result = await self._execute_step_nl2sql(nl2sql_question, message)
                         if nl2sql_result and nl2sql_result.get("success"):
                             result_text = nl2sql_result.get("result", "")
-                            # 尝试从结果中提取 ID
-                            extracted_id = self._extract_id_from_nl2sql_result(result_text)
-                            if extracted_id:
-                                final_params[param_name] = extracted_id
-                                print(f"[AgentLoop] {param_name} = {extracted_id}（NL2SQL 结果）")
+                            # 根据 extract 模式提取值
+                            if extract_mode == "all_concat":
+                                extracted_value = self._extract_all_ids_from_nl2sql_result(result_text)
                             else:
-                                # 多条结果或无法解析，返回选择
+                                extracted_value = self._extract_id_from_nl2sql_result(result_text)
+
+                            if extracted_value is not None:
+                                # 类型转换
+                                final_params[param_name] = self._convert_param_type(extracted_value, param_type)
+                                print(f"[AgentLoop] {param_name} = {final_params[param_name]}（NL2SQL 结果，extract={extract_mode}）")
+                            else:
+                                # 无法提取
                                 if on_empty == "select":
-                                    return self._build_agent_loop_select(tool_name, param_name, result_text, params_config)
+                                    return await self._build_agent_loop_select_all(tool_name, param_name, params_config, shop_id)
                         else:
                             # NL2SQL 失败
                             if on_empty == "select":
-                                return self._build_agent_loop_select(tool_name, param_name, "查询失败，请手动选择", params_config)
+                                return await self._build_agent_loop_select_all(tool_name, param_name, params_config, shop_id)
 
-                if action == "skip" or param_name not in final_params:
+                if param_name not in final_params:
                     # 无法确定，根据 on_empty 处理
                     if on_empty == "select":
-                        # 返回选择弹窗（查询所有选项）
                         return await self._build_agent_loop_select_all(tool_name, param_name, params_config, shop_id)
                     elif on_empty == "skip":
-                        # 留空，让工具自己处理
                         print(f"[AgentLoop] {param_name} 无法确定，留空让工具处理")
                     elif on_empty == "error":
                         return {"success": False, "result": "", "error": f"无法确定参数 {param_name}"}
@@ -1808,20 +1839,53 @@ Router 分析: {analysis}
             return {"success": False, "result": "", "error": str(e)}
 
     def _extract_id_from_nl2sql_result(self, result_text: str):
-        """从 NL2SQL 结果中提取 ID"""
+        """从 NL2SQL 结果中提取第一个 ID"""
         import re
-        # 尝试提取第一个数字 ID
         lines = result_text.strip().split("\n")
         for line in lines:
-            # 匹配 "id: 123" 或 "| 123 |" 或 "ID: 123" 等格式
-            match = re.search(r'(?:id|ID)[:\s]*(\d+)', line)
-            if match:
-                return int(match.group(1))
+            # 跳过标题行
+            if line.startswith("查询") or line.startswith("找到") or line.startswith("---"):
+                continue
             # 匹配纯数字行
-            match = re.match(r'^\s*(\d+)\s*$', line)
+            match = re.match(r'^\s*(\d+)\s*$', line.strip())
             if match:
                 return int(match.group(1))
         return None
+
+    def _extract_all_ids_from_nl2sql_result(self, result_text: str) -> str:
+        """从 NL2SQL 结果中提取所有 ID，逗号拼接为字符串"""
+        import re
+        ids = []
+        lines = result_text.strip().split("\n")
+        for line in lines:
+            # 跳过标题行
+            if line.startswith("查询") or line.startswith("找到") or line.startswith("---"):
+                continue
+            # 匹配纯数字行
+            match = re.match(r'^\s*(\d+)\s*$', line.strip())
+            if match:
+                ids.append(match.group(1))
+        if ids:
+            return ",".join(ids)
+        return None
+
+    def _convert_param_type(self, value, target_type: str):
+        """将值转换为目标类型"""
+        if value is None:
+            return None
+
+        if target_type == "int":
+            try:
+                return int(value)
+            except (ValueError, TypeError):
+                # 如果是 "1,2,3" 格式的字符串，取第一个
+                if isinstance(value, str) and "," in value:
+                    return int(value.split(",")[0].strip())
+                return value
+        elif target_type == "str":
+            return str(value)
+        else:
+            return value
 
     def _build_agent_loop_select(self, tool_name: str, param_name: str, result_text: str, params_config: dict) -> dict:
         """构建 Agent Loop 的选择弹窗（从 NL2SQL 结果中选择）"""
