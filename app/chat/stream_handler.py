@@ -1981,6 +1981,8 @@ Router 分析: {analysis}
 
     async def _call_tool_direct(self, tool, tool_name: str, message: str, route_context: dict = None, override_params: dict = None) -> dict:
         """直接调用工具（最终调用点）"""
+        if not tool:
+            return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
         t0 = time.time()
         try:
             # 构建参数
@@ -2034,7 +2036,11 @@ Router 分析: {analysis}
             return await self._execute_with_param_resolution(tool_name, message, route_context)
         else:
             # 没有参数解析计划，直接调用工具
-            return await self._call_tool_direct(None, tool_name, message, route_context)
+            from app.tools import TOOL_MAP
+            tool = TOOL_MAP.get(tool_name)
+            if not tool:
+                return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
+            return await self._call_tool_direct(tool, tool_name, message, route_context)
 
     def _is_valid_result(self, result: str, action: str) -> bool:
 
