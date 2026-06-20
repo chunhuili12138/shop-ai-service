@@ -504,13 +504,14 @@ class TaskRouter:
             self._llm = get_chat_llm()
         return self._llm
     
-    async def _check_need_clarification(self, question: str, shop_name: str = "") -> dict:
+    async def _check_need_clarification(self, question: str, shop_name: str = "", history_context: str = "") -> dict:
         """
         检查是否需要追问
         
         Args:
             question: 用户问题
             shop_name: 店铺名称（有店铺则跳过店铺相关追问）
+            history_context: 对话历史上下文
         
         Returns:
             {"need_clarify": bool, "reason": str, "missing_info": str, "clarify_message": str, "quick_questions": list}
@@ -555,19 +556,33 @@ class TaskRouter:
         
         # 3. LLM 判断（复杂情况）
         try:
+            history_section = ""
+            if history_context:
+                history_section = f"""
+## 对话历史
+{history_context}
+"""
+
             prompt = f"""判断用户问题是否需要追问才能准确回答。
 
 用户问题："{question}"
+{history_section}
+判断规则：
+1. 先查看对话历史，理解用户的上下文
+2. 如果用户的问题可以从对话历史中推断出含义，不需要追问
+3. 如果用户的问题是对之前回答的纠正或确认，不需要追问
+4. 只有当问题完全无法从上下文理解时，才需要追问
 
 需要追问的情况：
-1. 问题缺少关键信息（如地点、时间、对象等）
-2. 问题有多种理解方式
-3. 问题涉及特定上下文但未说明
+1. 问题缺少关键信息，且对话历史中也没有
+2. 问题有多种理解方式，无法从上下文推断
+3. 问题涉及全新的主题，与历史对话无关
 
 不需要追问的情况：
-1. 问题已经很明确（如"本月营业额"）
-2. 问题涉及店铺内部数据（如"库存多少"、"套餐价格"）
-3. 问题是通用知识（如"什么是RFM模型"）
+1. 问题可以从对话历史中推断出含义
+2. 问题是对之前回答的纠正或确认
+3. 问题涉及店铺内部数据（营业额、退款、库存等）
+4. 问题是通用知识
 
 只返回 JSON 格式：
 {{"need_clarify": true/false, "reason": "原因", "missing_info": "缺少的信息"}}"""
@@ -783,7 +798,7 @@ class TaskRouter:
                     shop_name = line.split("：")[-1].strip() if "：" in line else line.split(":")[-1].strip()
                     break
         
-        clarification = await self._check_need_clarification(task, shop_name)
+        clarification = await self._check_need_clarification(task, shop_name, history_context)
         if clarification.get("need_clarify"):
             missing_info = clarification.get("missing_info", "")
             print(f"[Router] 需要追问，缺少信息: {missing_info}")
