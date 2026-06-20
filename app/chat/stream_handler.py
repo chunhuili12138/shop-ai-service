@@ -1808,8 +1808,12 @@ Router 分析: {analysis}
 规则：
 - 如果用户明确指定了值（如名称、ID、数量），直接填入 value（注意类型：int 填数字，str 填字符串）
 - 如果需要查询，action 填 "nl2sql"，description 用自然语言描述查询需求
-- 如果无法确定，action 填 "skip"，on_empty 填 "select"（返回列表让用户选）或 "skip"（留空让工具处理）
+- 如果无法确定，action 填 "skip"
+- on_empty 规则：
+  - 可查询参数（ID、名称等）：如果无法确定，on_empty 填 "select"（返回列表让用户选）
+  - 自由文本参数（reason、remark、备注等）：on_empty 填 "skip"（留空让工具的 confirm 弹窗让用户填写）
 - 不要编造不存在的数据
+- 不要为自由文本字段（reason、remark、备注）设置 on_empty="select"
 - 只返回 JSON"""
 
             from app.llm import get_chat_llm
