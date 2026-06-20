@@ -1868,13 +1868,7 @@ Router 分析: {analysis}
                     elif on_empty == "error":
                         return {"success": False, "result": "", "error": f"无法确定参数 {param_name}"}
 
-            # 检查必要参数是否齐全（如果 LLM plan 为空或缺失参数，自动查询让用户选择）
-            for param_name, param_info in params_info.items():
-                if param_name not in final_params and param_info.get("required", True):
-                    print(f"[AgentLoop] 必要参数 {param_name} 缺失，查询所有选项让用户选择")
-                    return await self._build_agent_loop_select_all(tool_name, param_name, params_config, shop_id)
-
-            # 调用目标工具
+            # 调用目标工具（不校验 required，缺失的参数由工具的 confirm 弹窗让用户填写）
             print(f"[AgentLoop] 参数解析完成: {final_params}")
             return await self._call_tool_direct(tool, tool_name, message, route_context, override_params=final_params)
 
