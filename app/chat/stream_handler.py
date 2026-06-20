@@ -3162,23 +3162,14 @@ Router 分析: {analysis}
         
 
         # 并发执行 Supervisor 和进度输出
-
         supervisor_task = asyncio.create_task(run_supervisor())
-
         
-
         # 记录执行结果
-
         final_result = None
-
         
-
         while True:
-
             try:
-
                 # 等待进度信息（超时 0.5 秒）
-
                 step, content, status = await asyncio.wait_for(progress_queue.get(), timeout=0.5)
 
                 
@@ -3238,10 +3229,11 @@ Router 分析: {analysis}
         
 
         # 等待任务完成
-
-        await supervisor_task
-
-        
+        try:
+            await supervisor_task
+        except asyncio.CancelledError:
+            print("[StreamHandler] Supervisor 任务被取消")
+            return
 
         # 记录执行结果
 
@@ -3349,9 +3341,16 @@ Router 分析: {analysis}
             yield self._format_sse("error", friendly_msg, "错误")
 
             yield self._format_sse("done", "", "完成", done=True)
-
+        
+        # 确保 Supervisor 任务被取消（如果还在运行）
+        if not supervisor_task.done():
+            supervisor_task.cancel()
+            try:
+                await supervisor_task
+            except asyncio.CancelledError:
+                pass
+            print("[StreamHandler] Supervisor 任务已取消")
     
-
     async def _process_rag(self, message: str, trace, route_context: dict = None, route_info: str = "", history_context: str = "") -> AsyncGenerator[str, None]:
 
         """

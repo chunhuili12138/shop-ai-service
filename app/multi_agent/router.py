@@ -717,38 +717,49 @@ class TaskRouter:
     
     async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
         """
-        路由任务到合适的 Agent（使用 LLM 判断）
+        判断任务路由
+        
+        流程：
+        1. 图像任务 → Vision Agent
+        2. 上下文相关问题 → LLM Agent
+        3. 问题有效性检查 → 可能返回 clarify
+        4. 追问检查 → 可能返回 clarify
+        5. LLM 判断任务类型 → COMPLEXITY_PROMPT
+        
+        Args:
+            task: 用户任务
+            has_image: 是否包含图像
+            shop_context: 店铺上下文信息（行业、套餐等）
+        
+        Returns:
+            路由结果
         """
-        # 1. 图像任务
+        # 1. 如果有图像，直接使用 Vision Agent
         if has_image:
             return {
                 "mode": "single",
                 "agent": AgentType.VISION,
-                "reasoning": "包含图像，使用 Vision Agent 处理",
-                "understanding": f"用户想要{task}",
-                "analysis": "",
-                "plan": [{"step": 1, "action": task, "tool": "vision", "is_critical": True}],
-                "complexity": "simple"
+                "reasoning": "包含图像，使用 Vision Agent 处理"
             }
         
-        # 提取历史上下文
+        # 2. 提取历史上下文
         history_context = ""
         if shop_context and "历史对话" in shop_context:
             history_context = shop_context
         
-        # 2. 上下文相关问题
+        # 3. 上下文相关问题
         if self._is_context_question(task, history_context):
             return {
                 "mode": "single",
                 "agent": AgentType.LLM,
                 "reasoning": "上下文相关问题，使用 LLM 基于历史回答",
-                "understanding": f"用户在追问之前对话中的内容",
+                "understanding": "用户在追问之前对话中的内容",
                 "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
                 "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
                 "complexity": "simple"
             }
         
-        # 3. 检查问题是否有效（不是无意义内容）
+        # 4. 检查问题是否有效（不是无意义内容）
         validity = await self._check_question_validity(task)
         if not validity.get("is_valid"):
             print(f"[Router] 问题无效: {validity.get('reason')}")
@@ -764,8 +775,7 @@ class TaskRouter:
                 "quick_questions": validity.get("quick_questions", [])
             }
         
-        # 4. 检查是否需要追问（在规划任务之前）
-        # 提取店铺名称
+        # 5. 检查是否需要追问
         shop_name = ""
         if shop_context:
             for line in shop_context.split("\n"):
@@ -777,7 +787,6 @@ class TaskRouter:
         if clarification.get("need_clarify"):
             missing_info = clarification.get("missing_info", "")
             print(f"[Router] 需要追问，缺少信息: {missing_info}")
-            
             return {
                 "mode": "clarify",
                 "agent": None,
@@ -790,109 +799,166 @@ class TaskRouter:
                 "quick_questions": clarification.get("quick_questions", [])
             }
         
-        # 5. 使用 LLM 判断问题类型
+        # 6. 检查缓存
+        cache_key = _get_cache_key(task, shop_context)
+        if cache_key in _plan_cache:
+            print(f"[Router] 命中计划缓存: {cache_key}")
+            return _plan_cache[cache_key]
+        
         try:
+            # 7. 使用 COMPLEXITY_PROMPT 判断任务类型
             from langchain_core.messages import HumanMessage
             
-            prompt = f"""分析用户问题，判断应该使用哪个 Agent 处理，并生成执行计划。
+            prompt = COMPLEXITY_PROMPT.format(task=task)
+            
+            # 添加店铺上下文和历史上下文
+            if shop_context:
+                prompt += f"\n\n## 上下文信息\n{shop_context}"
+            
+            # 添加明确指令：如何使用历史上下文
+            if shop_context and "历史对话" in shop_context:
+                prompt += """
 
-用户问题：{task}
+## 重要：处理模糊指代和重试指令
 
-## 重要：plan.action 必须是实际要执行的任务
-
-**plan.action 字段必须是具体的执行任务，而不是用户的原始输入。**
-
-特别是当用户的问题是模糊指代时（如"重试上面这个问题"、"再试一次"）：
-- ❌ 错误：{{"action": "重试上面这个问题"}}
-- ✅ 正确：{{"action": "查询今天的营业额"}}（从历史对话中找到的实际任务）
+当用户的问题是模糊指代（如"重试上面这个问题"、"再试一次"、"那个呢"）时：
+1. 先查看【上下文信息】中的历史对话
+2. 找到用户上一个具体的问题
+3. 将当前问题理解为那个具体问题
 
 示例：
-- 用户说："重试上面这个问题"，历史上问过"今天营业额多少"
-- plan.action 应该是："查询今天的营业额"
+- 历史对话：用户问"今天营业额多少"，助手回答"¥2,580"
+- 当前问题："重试上面这个问题"
+- 正确理解：用户想要重新查询"今天营业额多少"
+- 路由：single + nl2sql（使用原始问题，而不是"重试"这个指令）
 
-- 用户说："本月呢？"，历史上问过"历史总收入"
-- plan.action 应该是："查询本月的总收入"
-
-可用 Agent（tool 字段必须使用以下英文名称）：
-- rag: 知识问答、天气、新闻、实时信息、定义、解释、建议
-- nl2sql: 数据查询（营业额、支出、收入、顾客数等店铺数据）
-- tool: 工具调用（查询顾客信息、排班表、优惠券等）
-- llm: 上下文分析、总结建议（基于已有信息回答）
-
-判断规则：
-1. 天气、新闻、实时信息 → rag
-2. 查询店铺数据 → nl2sql
-3. 定义、解释、建议 → rag 或 llm
-4. 多个步骤 → multi
-
-⚠️ 重要：tool 字段必须是英文（rag/nl2sql/tool/llm），禁止使用中文！
-
-返回 JSON：
-{{
-    "agent": "rag/nl2sql/tool/llm",
-    "reasoning": "原因",
-    "understanding": "用户想要XXX（从历史中推断的真实意图）",
-    "plan": [{{"step": 1, "action": "具体执行任务（不是用户原话）", "tool": "rag/nl2sql/tool/llm"}}]
-}}"""
+- 历史对话：用户问"今天天气怎么样"，助手追问"请问您想了解哪个地方？"
+- 当前问题："嘉善"
+- 正确理解：用户想查询"嘉善天气"
+- 路由：single + rag
+"""
             
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
-            result = safe_parse_json(response.content.strip())
             
-            if result and "agent" in result:
-                agent_type = result["agent"]
-                reasoning = result.get("reasoning", "")
-                llm_plan = result.get("plan", [])
+            # 解析响应（处理 markdown 代码块）
+            content = response.content.strip()
+            
+            # 提取 JSON
+            if "```json" in content:
+                start = content.find("```json") + 7
+                end = content.find("```", start)
+                content = content[start:end].strip()
+            elif "```" in content:
+                start = content.find("```") + 3
+                end = content.find("```", start)
+                content = content[start:end].strip()
+            
+            result = safe_parse_json(content)
+            
+            # JSON 解析失败时重试
+            max_retries = 2
+            retry_count = 0
+            while not result and retry_count < max_retries:
+                retry_count += 1
+                print(f"[Router] JSON 解析失败，重试 {retry_count}/{max_retries}")
+                retry_prompt = prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字。"
+                response = await self.llm.ainvoke([HumanMessage(content=retry_prompt)])
+                content = response.content.strip()
                 
-                # 映射 Agent 类型
-                agent_map = {
-                    "rag": AgentType.RAG,
-                    "nl2sql": AgentType.NL2SQL,
-                    "tool": AgentType.TOOL,
-                    "llm": AgentType.LLM,
-                    "multi": None,
-                }
+                if "```json" in content:
+                    start = content.find("```json") + 7
+                    end = content.find("```", start)
+                    content = content[start:end].strip()
+                elif "```" in content:
+                    start = content.find("```") + 3
+                    end = content.find("```", start)
+                    content = content[start:end].strip()
                 
-                agent = agent_map.get(agent_type, AgentType.LLM)
+                result = safe_parse_json(content)
+            
+            if not result:
+                # 重试都失败，根据关键词判断意图选择 fallback
+                operation_keywords = ["发放", "退款", "核销", "入库", "出库", "通知", "回复", "重试", "拒绝", "批准", "查", "查询", "搜索"]
+                is_operation = any(kw in task for kw in operation_keywords)
                 
-                # 构建默认计划（如果 LLM 没有返回）
-                if not llm_plan:
-                    llm_plan = [{"step": 1, "action": task, "tool": agent_type, "is_critical": True}]
-                
-                if agent_type == "multi":
-                    return {
-                        "mode": "multi",
-                        "agent": None,
-                        "reasoning": reasoning,
-                        "understanding": f"用户想要{task}",
-                        "analysis": "",
-                        "plan": [],
-                        "complexity": "complex"
-                    }
-                else:
+                if is_operation:
+                    print(f"[Router] JSON 解析失败（重试{retry_count}次），检测到操作类请求，fallback 到 TOOL")
                     return {
                         "mode": "single",
-                        "agent": agent,
-                        "reasoning": reasoning,
+                        "agent": AgentType.TOOL,
+                        "reasoning": f"JSON 解析失败（重试{retry_count}次），检测到操作类关键词，fallback 到 TOOL",
                         "understanding": f"用户想要{task}",
                         "analysis": "",
-                        "plan": llm_plan,
+                        "plan": [{"step": 1, "action": task, "tool": "tool", "is_critical": True}],
                         "complexity": "simple"
                     }
+                else:
+                    print(f"[Router] JSON 解析失败（重试{retry_count}次），fallback 到 RAG")
+                    return {
+                        "mode": "single",
+                        "agent": AgentType.RAG,
+                        "reasoning": f"JSON 解析失败（重试{retry_count}次），默认使用 RAG",
+                        "understanding": f"用户想要{task}",
+                        "analysis": "",
+                        "plan": [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}],
+                        "complexity": "simple"
+                    }
+            
+            # 知识性问题直接使用 RAG，不拆分任务
+            if result.get("is_knowledge_question"):
+                result["mode"] = "single"
+                result["agent"] = AgentType.RAG
+            
+            # 验证结果
+            if result.get("mode") not in ["single", "multi"]:
+                result["mode"] = "single"
+            
+            if result.get("mode") == "single" and result.get("agent") not in [AgentType.RAG, AgentType.NL2SQL, AgentType.TOOL, AgentType.VISION]:
+                result["agent"] = AgentType.TOOL
+            
+            # 补充默认值
+            if "understanding" not in result:
+                result["understanding"] = f"用户想要{task}"
+            if "analysis" not in result:
+                result["analysis"] = ""
+            if "plan" not in result:
+                result["plan"] = [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}]
+            if "complexity" not in result:
+                result["complexity"] = "simple"
+            
+            # 保存到缓存
+            if len(_plan_cache) >= _cache_max_size:
+                _plan_cache.clear()
+            _plan_cache[cache_key] = result
+            
+            return result
         except Exception as e:
-            print(f"[Router] LLM 路由失败: {str(e)}")
-        
-        # 4. 默认使用 LLM
-        return {
-            "mode": "single",
-            "agent": AgentType.LLM,
-            "reasoning": "默认使用 LLM 处理",
-            "understanding": f"用户想要{task}",
-            "analysis": "",
-            "plan": [{"step": 1, "action": task, "tool": "llm", "is_critical": True}],
-            "complexity": "simple"
-        }
-    
-    async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
+            print(f"[Router] 路由判断失败: {str(e)}")
+            operation_keywords = ["发放", "退款", "核销", "入库", "出库", "通知", "回复", "重试", "拒绝", "批准", "查", "查询", "搜索"]
+            is_operation = any(kw in task for kw in operation_keywords)
+            
+            if is_operation:
+                print(f"[Router] 路由判断失败，检测到操作类请求，fallback 到 TOOL")
+                return {
+                    "mode": "single",
+                    "agent": AgentType.TOOL,
+                    "reasoning": f"路由判断失败，检测到操作类关键词，fallback 到 TOOL: {str(e)}",
+                    "understanding": f"用户想要{task}",
+                    "analysis": "",
+                    "plan": [{"step": 1, "action": task, "tool": "tool", "is_critical": True}],
+                    "complexity": "simple"
+                }
+            else:
+                print(f"[Router] 路由判断失败，fallback 到 RAG")
+                return {
+                    "mode": "single",
+                    "agent": AgentType.RAG,
+                    "reasoning": f"路由判断失败，默认使用 RAG: {str(e)}",
+                    "understanding": f"用户想要{task}",
+                    "analysis": "",
+                    "plan": [{"step": 1, "action": task, "tool": "知识检索", "is_critical": True}],
+                    "complexity": "simple"
+                }
         """
         判断任务路由
         
