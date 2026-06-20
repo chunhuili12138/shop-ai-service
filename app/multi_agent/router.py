@@ -996,17 +996,26 @@ class TaskRouter:
                 "quick_questions": check_result.get("quick_questions", [])
             }
         
-        # 3b. 上下文相关问题
+        # 3b. 上下文相关问题（不直接返回，继续路由让 COMPLEXITY_PROMPT 判断）
+        # 只有纯文本的上下文问题（如纠正、确认）才直接返回 LLM Agent
+        # 操作类的上下文问题（如"拒绝林志玲的申请"）应该继续路由到操作工具
         if check_result.get("is_context_question"):
-            return {
-                "mode": "single",
-                "agent": AgentType.LLM,
-                "reasoning": check_result.get("reason", "上下文相关问题"),
-                "understanding": "用户在追问之前对话中的内容",
-                "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
-                "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
-                "complexity": "simple"
-            }
+            # 检查是否是操作指令（包含动词）
+            operation_verbs = ["同意", "拒绝", "批准", "发放", "核销", "入库", "出库", "回复", "发送", "查询", "列出", "查看"]
+            is_operation = any(verb in task for verb in operation_verbs)
+            
+            if not is_operation:
+                # 纯文本上下文问题（如"处理中不就是待处理嘛"），直接返回 LLM Agent
+                return {
+                    "mode": "single",
+                    "agent": AgentType.LLM,
+                    "reasoning": check_result.get("reason", "上下文相关问题"),
+                    "understanding": "用户在追问之前对话中的内容",
+                    "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
+                    "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
+                    "complexity": "simple"
+                }
+            # 操作类上下文问题，继续路由到 COMPLEXITY_PROMPT
         
         # 3c. 需要追问
         if check_result.get("need_clarify"):
