@@ -1055,15 +1055,33 @@ class StreamHandler:
 
     
 
+    # NL2SQL 结果缓存（避免重复查询）
+    _nl2sql_cache = {}  # key: f"{shop_id}:{context_hash}", value: {"result": ..., "timestamp": ...}
+    _nl2sql_cache_ttl = 300  # 缓存过期时间（秒）
+
     async def _execute_step_nl2sql(self, context: str, original_task: str) -> dict:
 
-        """执行 NL2SQL 步骤"""
+        """执行 NL2SQL 步骤（带缓存）"""
 
         print(f"[StreamHandler:NL2SQL] ========== 开始执行 ==========")
 
         print(f"[StreamHandler:NL2SQL] 入参 original_task: {original_task}")
 
         print(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context}")
+
+        # 检查缓存
+        import hashlib
+        cache_key = f"{self.user_context.shop_id}:{hashlib.md5(context.encode()).hexdigest()}"
+        now = time.time()
+        
+        if cache_key in self._nl2sql_cache:
+            cached = self._nl2sql_cache[cache_key]
+            if now - cached["timestamp"] < self._nl2sql_cache_ttl:
+                print(f"[StreamHandler:NL2SQL] 命中缓存，跳过执行")
+                return cached["result"]
+            else:
+                # 缓存过期，删除
+                del self._nl2sql_cache[cache_key]
 
         t0 = time.time()
 
@@ -1095,7 +1113,7 @@ class StreamHandler:
 
 
 
-            return {
+            result_dict = {
 
                 "success": result.success,
 
@@ -1104,6 +1122,20 @@ class StreamHandler:
                 "error": result.error if not result.success else ""
 
             }
+
+            # 缓存成功结果
+            if result.success:
+                self._nl2sql_cache[cache_key] = {
+                    "result": result_dict,
+                    "timestamp": now
+                }
+                # 清理过期缓存
+                if len(self._nl2sql_cache) > 100:
+                    expired_keys = [k for k, v in self._nl2sql_cache.items() if now - v["timestamp"] > self._nl2sql_cache_ttl]
+                    for k in expired_keys:
+                        del self._nl2sql_cache[k]
+
+            return result_dict
 
         except Exception as e:
 
