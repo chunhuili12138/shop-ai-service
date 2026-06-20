@@ -623,12 +623,13 @@ class TaskRouter:
         else:
             return f"为了更准确地回答您的问题，请补充：{missing_info}"
     
-    async def _check_question_validity(self, question: str) -> dict:
+    async def _check_question_validity(self, question: str, history_context: str = "") -> dict:
         """
         检查问题是否有效（不是无意义内容）
         
         Args:
             question: 用户问题
+            history_context: 对话历史上下文
         
         Returns:
             {"is_valid": bool, "reason": str, "suggestion": str, "quick_questions": list}
@@ -674,13 +675,21 @@ class TaskRouter:
         
         # 4. 使用 LLM 判断问题是否有效
         try:
+            history_section = ""
+            if history_context:
+                history_section = f"""
+## 对话历史
+{history_context}
+"""
+
             prompt = f"""判断以下用户输入是否是一个有效的问题或请求。
 
 用户输入："{question}"
-
+{history_section}
 有效的输入：
 - 有明确意图的问题（如"今天营业额多少"）
-- 有明确意图的请求（如"帮我查一下库存"）
+- 有明确意图的请求（如"帮我查一下库存"、"同意林志玲退款"、"拒绝黄晓明的退款"）
+- 基于对话历史的纠正或确认（如"处理中不就是待处理嘛"）
 - 简短但有意义的问候（如"你好"、"在吗"）
 
 无效的输入：
@@ -688,6 +697,11 @@ class TaskRouter:
 - 测试输入（如"test"、"测试"）
 - 不完整的输入（如"帮我"、"查询"）
 - 纯表情符号
+
+判断规则：
+1. 如果用户输入可以从对话历史中推断出意图，判定为有效
+2. 如果用户输入是操作指令（如批准、拒绝、查询、发放），判定为有效
+3. 只有真正无意义的输入才判定为无效
 
 只返回 JSON 格式：
 {{"is_valid": true/false, "reason": "原因", "suggestion": "如果无效，给用户的友好反问"}}"""
@@ -775,7 +789,7 @@ class TaskRouter:
             }
         
         # 4. 检查问题是否有效（不是无意义内容）
-        validity = await self._check_question_validity(task)
+        validity = await self._check_question_validity(task, history_context)
         if not validity.get("is_valid"):
             print(f"[Router] 问题无效: {validity.get('reason')}")
             return {
