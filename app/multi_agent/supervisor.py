@@ -775,7 +775,7 @@ class SupervisorAgent:
                     sub_task, context, query_context, image_url, trace
                 )
                 
-                if result_dict.get("needs_confirm"):
+                if result_dict.get("confirm_data"):
                     pending_confirms.append(result_dict["confirm_data"])
                     completed[sub_task.id] = AgentResult(
                         agent=AgentType.TOOL,
@@ -788,7 +788,7 @@ class SupervisorAgent:
                         f"✓ {sub_task.description} - 等待确认",
                         "success"
                     )
-                elif result_dict.get("needs_select"):
+                elif result_dict.get("select_data"):
                     # 需要用户选择，立即返回
                     return AgentResult(
                         agent=AgentType.SUPERVISOR,
