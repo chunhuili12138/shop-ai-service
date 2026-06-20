@@ -1017,36 +1017,24 @@ class StreamHandler:
 
         yield self._format_sse("processing", "正在汇总结果...", "汇总")
 
-
-
-        final_result = await self._final_summarize(
-
+        # 流式调用 LLM 汇总
+        final_result = ""
+        async for sse_event in self._final_summarize_stream(
             user_message=message,
-
             understanding=understanding,
-
             analysis=analysis,
-
             plan=plan,
-
             step_results=step_results,
-
             history_context=history_context,
-
-        )
-
-        
-
-        print(f"[StreamHandler] 最终结果长度: {len(final_result)}")
+        ):
+            yield sse_event
 
         print(f"[StreamHandler] ========== 执行完成 ==========")
 
-        
-
-        # 收集 AI 回复
-
+        # 收集 AI 回复（从步骤结果中获取）
+        success_results = [r.get("result", "") for r in step_results if r.get("success") and r.get("result")]
+        final_result = "\n\n".join(success_results) if success_results else ""
         self._ai_response_parts.append(final_result)
-
         self._ai_response_data_type = "text"
 
         
@@ -2923,7 +2911,71 @@ Router 分析: {analysis}
 
             return "\n\n".join(success_results) if success_results else "抱歉，处理过程中出现问题，请稍后重试。"
 
-    
+    async def _final_summarize_stream(
+        self,
+        user_message: str,
+        understanding: str,
+        analysis: str,
+        plan: list,
+        step_results: list,
+        history_context: str,
+    ):
+        """
+        最终汇总步骤（流式输出）
+        
+        使用 LLM 流式调用，逐步 yield SSE 事件，让用户更快看到回答。
+        
+        Args:
+            user_message: 用户原始消息
+            understanding: Router 对问题的理解
+            analysis: Router 的分析
+            plan: 执行计划
+            step_results: 每步结果
+            history_context: 历史上下文
+        
+        Yields:
+            SSE 事件（answer 类型）
+        """
+        try:
+            from app.llm import get_chat_llm
+            from app.common.system_prompts import build_summarize_prompt
+            from langchain_core.messages import SystemMessage, HumanMessage
+
+            llm = get_chat_llm()
+
+            # 构建完整 Prompt
+            system_prompt, user_prompt = build_summarize_prompt(
+                user_message=user_message,
+                understanding=understanding,
+                analysis=analysis,
+                plan=plan,
+                step_results=step_results,
+                history_context=history_context,
+                display_name=self.user_context.display_name or "用户",
+                username=self.user_context.username or "",
+                role=self.user_context.role or "店员",
+                shop_name=self.user_context.shop_name or "店铺",
+                shop_id=self.user_context.shop_id,
+            )
+
+            # 流式调用 LLM
+            async for chunk in llm.astream([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=user_prompt),
+            ]):
+                if chunk.content:
+                    yield self._format_sse("answer", chunk.content, "回答生成", done=False)
+
+        except Exception as e:
+            print(f"[StreamHandler] 流式汇总失败: {str(e)}")
+            # 降级：使用非流式方法
+            try:
+                summary = await self._final_summarize(
+                    user_message, understanding, analysis, plan, step_results, history_context
+                )
+                yield self._format_sse("answer", summary, "回答")
+            except Exception as e2:
+                yield self._format_sse("answer", "抱歉，处理过程中出现问题，请稍后重试。", "回答")
 
     async def _process_single(
 
@@ -3334,31 +3386,19 @@ Router 分析: {analysis}
 
 
 
-            # 使用统一的 _final_summarize（带 system_prompts）
-
-            summary = await self._final_summarize(
-
+            # 使用统一的 _final_summarize_stream（流式输出）
+            async for sse_event in self._final_summarize_stream(
                 user_message=message,
-
                 understanding="",
-
                 analysis="",
-
                 plan=[],
-
                 step_results=raw_results,
-
                 history_context=history_context,
+            ):
+                yield sse_event
 
-            )
-
-
-
-            self._ai_response_parts.append(summary)
-
+            self._ai_response_parts.append("")
             self._ai_response_data_type = "text"
-
-            yield self._format_sse("answer", summary, "最终答案")
 
         else:
 
