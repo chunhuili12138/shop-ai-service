@@ -392,12 +392,23 @@ TASK_SPLIT_PROMPT = """分析以下复杂任务，将其拆分成多个子任务
 
 任务：{task}
 
-可用 Agent 类型：
+## 可用 Agent 类型：
 - nl2sql: 数据查询（营业额、顾客数、库存、员工绩效、财务数据等）
 - tool: 工具调用（查询顾客信息、排班表、优惠券等）
 - llm: 总结分析建议（基于数据进行分析、总结、给出建议）
 - rag: 知识问答（定义、解释、行业知识、规则政策等）
 - vision: 图像理解（OCR文字识别、图像分析等）
+
+## 操作类工具（agent=tool 时必须指定 tool_name）
+- refund_approve: 批准退款
+- refund_reject: 拒绝退款
+- game_session_checkin: 核销入座
+- game_session_finish: 结束游玩
+- material_inbound: 物料入库
+- material_outbound: 物料出库
+- grant_coupon: 发放优惠券
+- reply_feedback: 回复评价
+- send_notification: 发送通知
 
 ## 重要规则（必须遵守）
 
@@ -405,22 +416,18 @@ TASK_SPLIT_PROMPT = """分析以下复杂任务，将其拆分成多个子任务
 1. **查询店铺数据** → 使用 nl2sql（营业额、订单、顾客、库存等）
 2. **分析/总结/建议** → 使用 llm（基于数据进行分析、给出建议）
 3. **知识问答** → 使用 rag（定义、解释、行业知识、规则政策）
-4. **工具操作** → 使用 tool（查询顾客信息、排班表等）
+4. **工具操作** → 使用 tool（必须指定 tool_name）
 
-### 经营分析类任务
-当用户要求"分析经营情况"、"经营报告"时：
-- 数据查询部分 → 使用 nl2sql
-- 分析总结部分 → 使用 llm（不是 rag！）
+### tool_name 填写规则
+- agent="tool" 时，必须指定 tool_name（从上面的操作类工具列表中选择）
+- agent 不是 "tool" 时，tool_name 填空字符串 ""
 
-### 关键区别
-- **llm**：基于提供的数据进行分析总结（不检索知识库，不搜索互联网）
-- **rag**：检索知识库回答问题（用于定义、解释、行业知识）
-
-## 拆分规则
+### 拆分规则
 1. 每个子任务应该明确指定使用哪个 Agent
 2. 子任务之间应该清晰分离，避免重复
 3. 保持原始任务的语义，不要遗漏信息
 4. 如果子任务之间有依赖关系，必须指定 depends_on
+5. 查询类子任务应该放在操作类子任务之前
 
 ## 示例
 
@@ -428,31 +435,32 @@ TASK_SPLIT_PROMPT = """分析以下复杂任务，将其拆分成多个子任务
 任务："分析本月经营情况"
 拆分结果：
 [
-    {{"id": 1, "task": "查询本月营收数据", "agent": "nl2sql", "description": "查询本月营业额、订单数、热销套餐", "depends_on": []}},
-    {{"id": 2, "task": "查询本月顾客数据", "agent": "nl2sql", "description": "查询本月新顾客数、活跃顾客数", "depends_on": []}},
-    {{"id": 3, "task": "查询本月支出数据", "agent": "nl2sql", "description": "查询本月各类支出", "depends_on": []}},
-    {{"id": 4, "task": "汇总分析并给出建议", "agent": "llm", "description": "基于以上数据进行分析并给出建议", "depends_on": [1, 2, 3]}}
+    {{"id": 1, "task": "查询本月营收数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月营业额、订单数、热销套餐", "depends_on": []}},
+    {{"id": 2, "task": "查询本月顾客数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月新顾客数、活跃顾客数", "depends_on": []}},
+    {{"id": 3, "task": "查询本月支出数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月各类支出", "depends_on": []}},
+    {{"id": 4, "task": "汇总分析并给出建议", "agent": "llm", "tool_name": "", "description": "基于以上数据进行分析并给出建议", "depends_on": [1, 2, 3]}}
 ]
 
-示例2（知识问答）：
-任务："什么是RFM模型？如何应用？"
+示例2（操作类任务）：
+任务："黄晓明的审核通过，赵丽颖的审核拒绝"
 拆分结果：
 [
-    {{"id": 1, "task": "解释RFM模型", "agent": "rag", "description": "从知识库获取RFM模型的定义和原理", "depends_on": []}},
-    {{"id": 2, "task": "RFM模型应用场景", "agent": "rag", "description": "从知识库获取RFM模型的应用方法", "depends_on": []}}
+    {{"id": 1, "task": "查询黄晓明和赵丽颖的待处理退款信息", "agent": "nl2sql", "tool_name": "", "description": "获取退款记录ID", "depends_on": []}},
+    {{"id": 2, "task": "批准黄晓明的退款", "agent": "tool", "tool_name": "refund_approve", "description": "调用退款批准工具", "depends_on": [1]}},
+    {{"id": 3, "task": "拒绝赵丽颖的退款", "agent": "tool", "tool_name": "refund_reject", "description": "调用退款拒绝工具", "depends_on": [1]}}
 ]
 
 示例3（混合任务）：
-任务："查询本月业绩，分析趋势，给出建议"
+任务："查询本月业绩，然后批准黄晓明的退款"
 拆分结果：
 [
-    {{"id": 1, "task": "查询本月业绩数据", "agent": "nl2sql", "description": "查询本月的营业额和订单数", "depends_on": []}},
-    {{"id": 2, "task": "分析业绩趋势并给出建议", "agent": "llm", "description": "基于数据进行趋势分析和建议", "depends_on": [1]}}
+    {{"id": 1, "task": "查询本月业绩数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月的营业额和订单数", "depends_on": []}},
+    {{"id": 2, "task": "批准黄晓明的退款", "agent": "tool", "tool_name": "refund_approve", "description": "调用退款批准工具", "depends_on": [1]}}
 ]
 
 请返回 JSON 格式的数组：
 [
-    {{"id": 1, "task": "子任务描述", "agent": "agent类型", "description": "任务说明", "depends_on": []}},
+    {{"id": 1, "task": "子任务描述", "agent": "agent类型", "tool_name": "工具名（agent=tool时必填，否则填空字符串）", "description": "任务说明", "depends_on": []}},
     ...
 ]
 
@@ -1157,6 +1165,7 @@ class TaskRouter:
                     id=sub_task_data.get("id", len(sub_tasks) + 1),
                     task=sub_task_data.get("task", ""),
                     agent=sub_task_data.get("agent", AgentType.TOOL),
+                    tool_name=sub_task_data.get("tool_name", ""),
                     description=sub_task_data.get("description", ""),
                     depends_on=sub_task_data.get("depends_on", []),
                 )
@@ -1165,7 +1174,8 @@ class TaskRouter:
             print(f"[TaskRouter] 任务拆分成功: {task} -> {len(sub_tasks)} 个子任务")
             for sub_task in sub_tasks:
                 deps = f" (依赖: {sub_task.depends_on})" if sub_task.depends_on else " (无依赖)"
-                print(f"  - 子任务{sub_task.id}: {sub_task.task} [{sub_task.agent}]{deps}")
+                tool = f" tool={sub_task.tool_name}" if sub_task.tool_name else ""
+                print(f"  - 子任务{sub_task.id}: {sub_task.task} [{sub_task.agent}]{tool}{deps}")
             
             return sub_tasks
             

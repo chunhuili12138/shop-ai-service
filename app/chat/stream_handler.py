@@ -842,6 +842,21 @@ class StreamHandler:
                                 print(f"[StreamHandler] 保存确认框消息失败: {str(e)}")
                         yield self._format_sse("confirm", confirm_data, "确认操作")
                         return
+                    # 批量确认类型：多个操作需要用户确认
+                    elif step_result and step_result.get("batch_confirm"):
+                        batch_data = step_result["batch_confirm"]
+                        # 保存到 session
+                        if self.session_id:
+                            try:
+                                from app.rag.session import get_session_manager
+                                session_mgr = get_session_manager()
+                                ops = batch_data.get("operations", [])
+                                ops_desc = "、".join([op.get("title", "") for op in ops])
+                                session_mgr.add_message(self.session_id, "assistant", f"【批量确认】{ops_desc}")
+                            except Exception as e:
+                                print(f"[StreamHandler] 保存批量确认消息失败: {str(e)}")
+                        yield self._format_sse("batch_confirm", batch_data, "批量确认")
+                        return
                     # 多选列表类型：保存选择列表消息到 session，再发 SSE select 事件
                     elif step_result and step_result.get("select_data"):
                         select_data = step_result["select_data"]
@@ -1659,12 +1674,12 @@ Router 分析: {analysis}
 
         return params
 
-    async def _execute_with_agent_loop(self, tool_name: str, message: str, route_context: dict = None) -> dict:
+    async def _execute_with_agent_loop(self, tool_name: str, message: str, route_context: dict = None, query_context: dict = None) -> dict:
         """
         Agent Loop 方式执行工具（LLM 自主规划参数获取）
 
         流程：
-        1. 构建 prompt（用户消息 + 工具需求 + 可用查询工具）
+        1. 构建 prompt（用户消息 + 工具需求 + 可用查询工具 + 查询上下文）
         2. LLM 生成 plan（哪些参数怎么获取）
         3. 执行 plan 中的每一步
         4. 如果需要用户选择 → 返回 select 弹窗
@@ -1674,6 +1689,7 @@ Router 分析: {analysis}
             tool_name: 工具名称
             message: 用户原始消息
             route_context: 路由上下文
+            query_context: 之前的查询结果（用于多任务场景，避免重复查询）
 
         Returns:
             {"success": bool, "result": str, "error": str, "confirm_data": dict, "select_data": dict}
@@ -1712,12 +1728,23 @@ Router 分析: {analysis}
             strategies = tool_req.get("strategies", "")
             fallback = tool_req.get("fallback", "")
 
+            # 构建查询上下文（之前的查询结果）
+            query_context_text = ""
+            if query_context:
+                query_context_text = "\n\n## 之前的查询结果（可直接使用这些数据，不需要重复查询）\n"
+                for task_id, result in query_context.items():
+                    if result:
+                        # 截断过长的结果
+                        result_preview = result[:500] + "..." if len(result) > 500 else result
+                        query_context_text += f"- 任务{task_id}: {result_preview}\n"
+
             system_prompt = f"""你是参数解析助手。用户想要执行 {tool_name} 操作，你需要帮他解析出所需的参数。
 
 ## 用户消息
 {message}
 
 {f"## 对话历史{chr(10)}{history_text}" if history_text else ""}
+{query_context_text}
 
 ## 工具描述
 {tool_req.get('description', tool_name)}
@@ -3232,10 +3259,43 @@ Router 分析: {analysis}
 
         
 
+        
         # 输出最终结果
-
         if final_result and final_result.success:
-
+            # 检查是否有批量确认需求
+            metadata = final_result.metadata or {}
+            if metadata.get("batch_confirm"):
+                # 有操作需要确认，输出 batch_confirm SSE 事件
+                batch_confirms = metadata["batch_confirm"]
+                batch_data = {
+                    "type": "batch_confirm",
+                    "title": "确认执行以下操作",
+                    "operations": batch_confirms,
+                    "buttons": [
+                        {"type": "confirm_all", "label": "全部确认"},
+                        {"type": "cancel", "label": "取消"},
+                    ],
+                }
+                # 保存到 session
+                if self.session_id:
+                    try:
+                        from app.rag.session import get_session_manager
+                        session_mgr = get_session_manager()
+                        ops_desc = "、".join([op.get("title", "") for op in batch_confirms])
+                        session_mgr.add_message(self.session_id, "assistant", f"【批量确认】{ops_desc}")
+                    except Exception as e:
+                        print(f"[StreamHandler] 保存批量确认消息失败: {str(e)}")
+                yield self._format_sse("batch_confirm", batch_data, "批量确认")
+                yield self._format_sse("done", "", "完成", done=True)
+                return
+            
+            # 检查是否有选择弹窗需求
+            if metadata.get("select_data"):
+                select_data = metadata["select_data"]
+                yield self._format_sse("select", select_data, "选择")
+                yield self._format_sse("done", "", "完成", done=True)
+                return
+            
             # 提取子任务原始结果
 
             raw_results = final_result.metadata.get("raw_results", []) if final_result.metadata else []

@@ -456,6 +456,11 @@ class SupervisorAgent:
         """
         执行子任务（支持串行/并行混合执行）
         
+        流程：
+        1. 检查是否有操作型子任务（tool_name 非空）
+        2. 有操作型子任务 → 使用支持确认的串行执行
+        3. 无操作型子任务 → 按原有逻辑（串行/并行）
+        
         Args:
             task: 原始任务
             plan: 任务计划
@@ -474,17 +479,25 @@ class SupervisorAgent:
                 "parallel": plan.parallel,
             })
         
-        # 判断执行方式
-        has_dependencies = any(sub_task.depends_on for sub_task in plan.sub_tasks)
+        # 检查是否有操作型子任务
+        has_operation_tasks = any(sub_task.tool_name for sub_task in plan.sub_tasks)
         
-        if has_dependencies:
-            # 有依赖关系，串行执行
-            print(f"[Supervisor] 检测到依赖关系，使用串行执行")
-            result = await self._execute_sub_tasks_serial(task, plan.sub_tasks, context, image_url, trace)
+        if has_operation_tasks:
+            # 有操作型子任务，使用支持确认的串行执行
+            print(f"[Supervisor] 检测到操作型子任务，使用支持确认的串行执行")
+            result = await self._execute_sub_tasks_serial_with_confirm(task, plan.sub_tasks, context, image_url, trace)
         else:
-            # 无依赖关系，并行执行
-            print(f"[Supervisor] 无依赖关系，使用并行执行")
-            result = await self._execute_sub_tasks_parallel(task, plan.sub_tasks, context, image_url, trace)
+            # 无操作型子任务，按原有逻辑
+            has_dependencies = any(sub_task.depends_on for sub_task in plan.sub_tasks)
+            
+            if has_dependencies:
+                # 有依赖关系，串行执行
+                print(f"[Supervisor] 检测到依赖关系，使用串行执行")
+                result = await self._execute_sub_tasks_serial(task, plan.sub_tasks, context, image_url, trace)
+            else:
+                # 无依赖关系，并行执行
+                print(f"[Supervisor] 无依赖关系，使用并行执行")
+                result = await self._execute_sub_tasks_parallel(task, plan.sub_tasks, context, image_url, trace)
         
         return result
     
@@ -696,6 +709,238 @@ class SupervisorAgent:
         
         # 汇总结果
         return await self._build_final_result(task, sub_tasks, valid_results, context, trace)
+    
+    async def _execute_sub_tasks_serial_with_confirm(
+        self, 
+        task: str, 
+        sub_tasks: List[SubTask], 
+        context: UserContext, 
+        image_url: str = None, 
+        trace=None
+    ) -> AgentResult:
+        """
+        串行执行子任务，支持操作确认
+        
+        流程：
+        1. 按拓扑排序执行子任务
+        2. 查询型子任务：立即执行，结果存入 query_context
+        3. 操作型子任务：调用 Agent Loop，收集 confirm_data
+        4. 所有子任务完成后，返回 batch_confirm（如有操作需要确认）
+        """
+        completed = {}
+        query_context = {}  # 存储查询结果，供后续子任务使用
+        pending_confirms = []  # 存储需要确认的操作
+        query_results_text = []  # 存储查询结果文本
+        
+        sorted_sub_tasks = sorted(sub_tasks, key=lambda st: st.id)
+        
+        for sub_task in sorted_sub_tasks:
+            # 检查是否已有结果（上轮复用）
+            if sub_task.result and sub_task.result.success:
+                completed[sub_task.id] = sub_task.result
+                if sub_task.result.result:
+                    query_results_text.append(sub_task.result.result)
+                    query_context[sub_task.id] = sub_task.result.result
+                await self._notify_progress(
+                    f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                    f"复用上轮结果: {sub_task.description}",
+                    "success"
+                )
+                continue
+            
+            # 检查依赖是否满足
+            dependencies_met = all(dep_id in completed for dep_id in sub_task.depends_on)
+            if not dependencies_met:
+                error_result = AgentResult(
+                    agent=sub_task.agent,
+                    result=f"依赖的子任务未完成: {sub_task.depends_on}",
+                    confidence=0.0,
+                    success=False,
+                )
+                completed[sub_task.id] = error_result
+                continue
+            
+            # 通知进度
+            await self._notify_progress(
+                f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}", 
+                f"正在执行: {sub_task.description}"
+            )
+            
+            print(f"[Supervisor] 执行子任务 {sub_task.id}: {sub_task.task} [{sub_task.agent}]")
+            
+            # 根据子任务类型选择执行方式
+            if sub_task.tool_name:
+                # ===== 操作型子任务 =====
+                result_dict = await self._execute_operation_sub_task(
+                    sub_task, context, query_context, image_url, trace
+                )
+                
+                if result_dict.get("needs_confirm"):
+                    pending_confirms.append(result_dict["confirm_data"])
+                    completed[sub_task.id] = AgentResult(
+                        agent=AgentType.TOOL,
+                        result="等待用户确认",
+                        confidence=0.9,
+                        success=True,
+                    )
+                    await self._notify_progress(
+                        f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                        f"✓ {sub_task.description} - 等待确认",
+                        "success"
+                    )
+                elif result_dict.get("needs_select"):
+                    # 需要用户选择，立即返回
+                    return AgentResult(
+                        agent=AgentType.SUPERVISOR,
+                        result="",
+                        confidence=0.9,
+                        metadata={"select_data": result_dict["select_data"]}
+                    )
+                else:
+                    # 操作直接完成（不需要确认）
+                    completed[sub_task.id] = AgentResult(
+                        agent=AgentType.TOOL,
+                        result=result_dict.get("result", ""),
+                        confidence=0.9,
+                        success=result_dict.get("success", False),
+                    )
+                    if result_dict.get("success"):
+                        await self._notify_progress(
+                            f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                            f"✓ 完成: {sub_task.description}",
+                            "success"
+                        )
+                    else:
+                        await self._notify_progress(
+                            f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                            f"✗ 失败: {sub_task.description}",
+                            "error"
+                        )
+            else:
+                # ===== 查询型子任务 =====
+                result = await self._execute_query_sub_task(
+                    sub_task, context, query_context, image_url, trace
+                )
+                completed[sub_task.id] = result
+                query_context[sub_task.id] = result.result  # 存储查询结果
+                
+                if result.result:
+                    query_results_text.append(result.result)
+                
+                if result.success:
+                    await self._notify_progress(
+                        f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                        f"✓ 完成: {sub_task.description}",
+                        "success"
+                    )
+                else:
+                    await self._notify_progress(
+                        f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                        f"✗ 失败: {sub_task.description}",
+                        "error"
+                    )
+                    print(f"[Supervisor] 子任务 {sub_task.id} 执行失败: {result.error}")
+        
+        # 如果有操作需要确认，返回 batch_confirm
+        if pending_confirms:
+            return AgentResult(
+                agent=AgentType.SUPERVISOR,
+                result="\n".join(query_results_text),  # 查询结果作为文本
+                confidence=0.9,
+                metadata={
+                    "batch_confirm": pending_confirms,
+                    "has_query_results": len(query_results_text) > 0,
+                }
+            )
+        
+        # 没有需要确认的操作，构建最终结果
+        return await self._build_final_result(task, sub_tasks, list(completed.values()), context, trace)
+    
+    async def _execute_operation_sub_task(
+        self, 
+        sub_task: SubTask, 
+        context: UserContext, 
+        query_context: dict,
+        image_url: str = None, 
+        trace=None
+    ) -> dict:
+        """
+        执行操作型子任务
+        
+        调用 Stream Handler 的 _execute_with_agent_loop，使用 TOOL_REQUIREMENTS 解析参数
+        
+        Returns:
+            dict: {"success": bool, "result": str, "confirm_data": dict, "select_data": dict, ...}
+        """
+        try:
+            from app.chat.stream_handler import StreamHandler
+            
+            # 创建 Stream Handler（不需要 session_id）
+            handler = StreamHandler(
+                user_context=context,
+                session_id=None,
+            )
+            
+            # 调用 Agent Loop（传递查询上下文）
+            result = await handler._execute_with_agent_loop(
+                tool_name=sub_task.tool_name,
+                message=sub_task.task,
+                route_context={"query_context": query_context},
+                query_context=query_context,
+            )
+            
+            return result
+        except Exception as e:
+            print(f"[Supervisor] 操作子任务执行异常: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return {"success": False, "error": str(e)}
+    
+    async def _execute_query_sub_task(
+        self, 
+        sub_task: SubTask, 
+        context: UserContext, 
+        query_context: dict,
+        image_url: str = None, 
+        trace=None
+    ) -> AgentResult:
+        """
+        执行查询型子任务
+        """
+        agent = self.agents.get(sub_task.agent)
+        if not agent:
+            return AgentResult(
+                agent=sub_task.agent,
+                result=f"未知的 Agent 类型: {sub_task.agent}",
+                confidence=0.0,
+                success=False,
+            )
+        
+        # 构建查询上下文（包含之前的查询结果）
+        context_text = ""
+        if query_context:
+            context_text = "\n\n## 之前的查询结果\n"
+            for task_id, result in query_context.items():
+                if result:
+                    # 截断过长的结果
+                    result_preview = result[:300] + "..." if len(result) > 300 else result
+                    context_text += f"- 任务{task_id}: {result_preview}\n"
+        
+        # 传递历史上下文和路由上下文
+        extra_kwargs = {}
+        if hasattr(self, '_current_history_context') and self._current_history_context:
+            extra_kwargs["history_context"] = self._current_history_context
+        if hasattr(self, '_current_route_context') and self._current_route_context:
+            extra_kwargs["route_context"] = self._current_route_context
+        
+        result = await agent.execute(
+            sub_task.task + context_text, 
+            context, 
+            image_url=image_url,
+            **extra_kwargs
+        )
+        
+        return result
     
     def _build_sub_task_context(self, sub_task: SubTask, completed: Dict[int, AgentResult], base_context: UserContext) -> UserContext:
         """

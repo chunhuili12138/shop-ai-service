@@ -223,6 +223,18 @@ class SelectRequest(BaseModel):
     session_id: Optional[str] = None
 
 
+class BatchOperation(BaseModel):
+    """批量操作中的单个操作"""
+    action: str
+    params: dict
+
+
+class BatchConfirmRequest(BaseModel):
+    """批量确认请求"""
+    session_id: Optional[str] = None
+    operations: List[BatchOperation]
+
+
 # ==================== 聊天接口 ====================
 
 @router.post("/stream")
@@ -473,6 +485,97 @@ async def select_action(
     except Exception as e:
         logger.error(f"多选操作失败: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"操作失败: {str(e)}")
+
+
+@router.post("/batch_confirm")
+async def batch_confirm_action(
+    request: BatchConfirmRequest,
+    authorization: str = Header(...)
+):
+    """
+    批量确认操作接口
+    
+    接收多个操作，依次执行，返回每个操作的执行结果。
+    用于多任务场景下的批量操作确认（如同时批准和拒绝多个退款）。
+    """
+    try:
+        # 1. 验证 Token
+        token, shop_id = parse_authorization(authorization)
+        user_context = await verify_token(token, shop_id)
+
+        # 2. 执行每个操作
+        results = []
+        from app.tools import EXECUTE_FUNCTIONS
+
+        for operation in request.operations:
+            execute_func = EXECUTE_FUNCTIONS.get(operation.action)
+            if not execute_func:
+                results.append({
+                    "action": operation.action,
+                    "success": False,
+                    "msg": f"未知的操作类型: {operation.action}"
+                })
+                continue
+
+            # 权限校验
+            if not is_tool_allowed(user_context.role, operation.action):
+                results.append({
+                    "action": operation.action,
+                    "success": False,
+                    "msg": f"当前角色无权执行此操作: {operation.action}"
+                })
+                continue
+
+            # 执行
+            params = operation.params.copy()
+            params["operator_id"] = user_context.user_id
+            params["token"] = token
+
+            try:
+                result = execute_func(**params)
+                results.append({
+                    "action": operation.action,
+                    "success": True,
+                    "msg": str(result)
+                })
+                logger.info(f"[BatchConfirm] {operation.action} 执行成功: {result}")
+            except Exception as e:
+                results.append({
+                    "action": operation.action,
+                    "success": False,
+                    "msg": str(e)
+                })
+                logger.error(f"[BatchConfirm] {operation.action} 执行失败: {str(e)}")
+
+        # 3. 构建结果
+        success_count = sum(1 for r in results if r["success"])
+        fail_count = len(results) - success_count
+
+        # 4. 保存到 session
+        if request.session_id:
+            try:
+                session_mgr = get_session_manager()
+                summary_parts = []
+                for r in results:
+                    status = "✓" if r["success"] else "✗"
+                    summary_parts.append(f"{status} {r['action']}: {r['msg']}")
+                summary = f"批量操作完成 (成功 {success_count}, 失败 {fail_count}):\n" + "\n".join(summary_parts)
+                session_mgr.add_message(request.session_id, "assistant", summary)
+            except Exception as e:
+                logger.warning(f"保存批量确认结果失败: {str(e)}")
+
+        logger.info(f"[BatchConfirm] 批量操作完成 - user_id={user_context.user_id}, total={len(request.operations)}, success={success_count}, fail={fail_count}")
+
+        return {
+            "success": True,
+            "msg": f"执行完成: 成功 {success_count} 个, 失败 {fail_count} 个",
+            "data": {"results": results}
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"[BatchConfirm] 执行失败: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"批量操作执行失败: {str(e)}")
 
 
 # ==================== 会话管理接口 ====================

@@ -94,6 +94,7 @@ class SubTask:
     id: int                              # 子任务 ID
     task: str                            # 子任务描述
     agent: str                           # 执行的 Agent 类型
+    tool_name: str = ""                  # 具体工具名（agent=tool 时必填）
     description: str = ""                # 任务说明
     query: str = ""                      # 预定义查询（Skill 使用）
     depends_on: List[int] = field(default_factory=list)  # 依赖的子任务 ID 列表
@@ -105,6 +106,7 @@ class SubTask:
             "id": self.id,
             "task": self.task,
             "agent": self.agent,
+            "tool_name": self.tool_name,
             "description": self.description,
             "query": self.query,
             "depends_on": self.depends_on,
