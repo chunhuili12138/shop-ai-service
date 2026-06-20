@@ -22,14 +22,17 @@
 shop-ai-service/
 ├── app/
 │   ├── chat/                    # 聊天模块
-│   │   ├── router.py            # 聊天路由（POST /stream + 会话管理）
-│   │   └── stream_handler.py    # SSE 流式处理（含计划执行 + 全流程日志）
+│   │   ├── router.py            # 聊天路由（POST /stream + 会话管理 + batch_confirm）
+│   │   └── stream_handler.py    # SSE 流式处理（含 Agent Loop + 批量确认）
 │   ├── common/                  # 公共模块
 │   │   ├── auth.py              # Token 认证（TTLCache 缓存 + SSL 环境控制）
-│   │   └── user_context.py      # 用户上下文
+│   │   ├── backend_client.py    # Java 后端 API 调用客户端
+│   │   ├── user_context.py      # 用户上下文
+│   │   └── system_prompts.py    # 系统提示词（角色/安全/合规）
 │   ├── multi_agent/             # 多 Agent 模块
-│   │   ├── router.py            # 智能路由（LLM 判断 + Skills）
-│   │   ├── supervisor.py        # Supervisor 调度器
+│   │   ├── router.py            # 智能路由（LLM 判断 + Skills + 综合问题检查）
+│   │   ├── supervisor.py        # Supervisor 调度器（支持批量确认）
+│   │   ├── protocol.py          # 协议定义（SubTask 增加 tool_name）
 │   │   ├── rag_agent.py         # RAG 知识问答
 │   │   ├── nl2sql_agent.py      # NL2SQL 数据查询
 │   │   ├── tool_agent.py        # 工具调用
@@ -42,12 +45,16 @@ shop-ai-service/
 │   │   ├── safety.py            # SQL 安全校验（注入防护 + shop_id 过滤）
 │   │   └── executor.py          # SQL 执行器（事务支持）
 │   ├── tools/                   # 工具模块
+│   │   ├── __init__.py          # 工具注册（TOOL_MAP + TOOL_DISPLAY_NAMES）
 │   │   ├── agent_loop.py        # Agent 循环（带超时保护）
-│   │   ├── inventory.py         # 库存操作（事务包裹）
+│   │   ├── param_plans.py       # 参数解析计划（查询工具参数配置）
+│   │   ├── tool_requirements.py # 操作工具参数需求（Agent Loop 使用）
+│   │   ├── coupon.py            # 优惠券工具（调用 Java API）
+│   │   ├── trade.py             # 交易工具（退款/核销，调用 Java API）
+│   │   ├── inventory.py         # 库存工具（入库/出库，调用 Java API）
+│   │   ├── feedback.py          # 评价工具（回复，调用 Java API）
+│   │   ├── notification.py      # 通知工具（发送，调用 Java API）
 │   │   └── permissions.py       # 角色权限控制
-│   ├── hitl/                    # 人机协作审批
-│   │   ├── interrupt.py         # 中断管理器（Redis 持久化）
-│   │   └── approval.py          # 审批流程（可配置阈值）
 │   ├── knowledge/               # 知识库模块
 │   │   ├── scheduler.py         # 定时任务（动态 shop_id）
 │   │   └── package_client.py    # 套餐客户端（异步）
@@ -67,19 +74,67 @@ shop-ai-service/
 
 ## 核心架构
 
-### 1. 任务计划执行流程
+### 1. 任务路由流程
 
 ```
 用户问题
     ↓
-【Router 分析】LLM 判断意图 → mode/agent/plan
+【综合检查】_check_question（一次 LLM 调用）
+    ├── 无效输入 → 返回提示
+    ├── 上下文问题 → LLM Agent 基于历史回答
+    ├── 需要追问 → 返回追问提示
+    └── 有效 → 继续路由
     ↓
-【按计划执行】每步调用对应 Agent → 记录耗时和结果
-    ↓
-【汇总输出】LLM 汇总所有步骤结果 → 最终答案
+【Router 分析】COMPLEXITY_PROMPT → mode/agent/plan
+    ├── single + tool → 工具调用
+    ├── single + nl2sql → 数据查询
+    ├── single + rag → 知识问答
+    └── multi → 多任务拆分
 ```
 
-### 2. 安全机制
+### 2. 操作工具执行流程（Agent Loop）
+
+```
+Router → tool: grant_coupon
+    ↓
+【Agent Loop】_execute_with_agent_loop
+    ├── LLM 提取参数（从 TOOL_REQUIREMENTS）
+    ├── 查询上下文（query_context）
+    ├── NL2SQL 解析名称→ID
+    └── 调用工具 → 返回 confirm 弹窗
+    ↓
+【用户确认】POST /api/chat/confirm
+    ↓
+【执行】调用 Java 后端 API
+```
+
+### 3. 多任务批量确认流程
+
+```
+用户: "同意林志玲退款，拒绝黄晓明的"
+    ↓
+【Router】mode=multi
+    ↓
+【Supervisor】拆分子任务
+    ├── 子任务1: NL2SQL 查询退款信息
+    ├── 子任务2: refund_approve(林志玲) [tool_name=refund_approve]
+    └── 子任务3: refund_reject(黄晓明) [tool_name=refund_reject]
+    ↓
+【串行执行】
+    ├── 子任务1: 查询 → refund_id=14, 15
+    ├── 子任务2: Agent Loop → confirm_data
+    └── 子任务3: Agent Loop → confirm_data（含 reason 字段）
+    ↓
+【批量确认】SSE batch_confirm 事件
+    ↓
+【前端】BatchConfirmCard（checkbox + 输入框）
+    ↓
+【用户确认】POST /api/chat/batch_confirm
+    ↓
+【执行】循环调用 Java 后端 API
+```
+
+### 4. 安全机制
 
 ```
 请求 → Token 认证（TTLCache 缓存）
@@ -87,15 +142,6 @@ shop-ai-service/
     → 角色权限校验（is_tool_allowed）
     → SQL 安全校验（注入防护 + shop_id 强制过滤）
     → 工具执行超时保护（AGENT_TIMEOUT）
-```
-
-### 3. HITL 审批流程
-
-```
-高风险操作 → 检查审批阈值（可配置）
-    → 创建中断点（Redis 持久化 + UUID）
-    → 等待人工审批
-    → 执行或拒绝
 ```
 
 ---
@@ -147,7 +193,7 @@ python -m app.main
 ### 4. 运行测试
 
 ```bash
-python -m pytest tests/ -v
+python -m pytest tests/test_auth_unit.py tests/test_hitl_unit.py tests/test_safety_unit.py -v
 ```
 
 ---
@@ -167,25 +213,20 @@ Content-Type: application/json
 }
 ```
 
-**SSE 输出格式**：
+**SSE 事件类型**：
 
-```json
-// 理解问题
-{"type": "thinking", "content": "用户想要查询今天的营业额数据", "step": "理解问题", "done": false}
-
-// 执行计划
-{"type": "plan", "content": "1. 查询今日营业额", "step": "执行计划", "done": false}
-
-// 执行步骤
-{"type": "processing", "content": "步骤 1/1: 查询今日营业额...", "step": "步骤 1", "done": false}
-{"type": "processing", "content": "✓ 步骤 1 完成", "step": "步骤 1", "done": false}
-
-// 最终答案
-{"type": "answer", "content": "今日营业额为 ¥2,580.00，共 8 笔订单", "step": "最终答案", "done": false}
-
-// 完成
-{"type": "done", "content": "", "step": "完成", "done": true}
-```
+| 类型 | 说明 |
+|------|------|
+| `thinking` | 意图分析 |
+| `plan` | 执行计划 |
+| `processing` | 执行步骤 |
+| `answer` | 最终答案 |
+| `confirm` | 单个确认弹窗 |
+| `batch_confirm` | 批量确认弹窗 |
+| `select` | 选择弹窗 |
+| `quick_questions` | 快速问题建议 |
+| `done` | 完成 |
+| `error` | 错误 |
 
 ### 确认操作接口
 
@@ -194,8 +235,23 @@ POST /api/chat/confirm
 Authorization: Bearer-{shopId}-{token}
 
 {
-  "action": "material_inbound",
-  "params": {"shop_id": 5, "material_id": 1, "quantity": 100}
+  "action": "refund_approve",
+  "params": {"shop_id": 5, "refund_id": 14}
+}
+```
+
+### 批量确认接口
+
+```
+POST /api/chat/batch_confirm
+Authorization: Bearer-{shopId}-{token}
+
+{
+  "session_id": "会话ID",
+  "operations": [
+    {"action": "refund_approve", "params": {"shop_id": 5, "refund_id": 14}},
+    {"action": "refund_reject", "params": {"shop_id": 5, "refund_id": 15, "reason": "超过退款期限"}}
+  ]
 }
 ```
 
@@ -207,6 +263,35 @@ Authorization: Bearer-{shopId}-{token}
 | `/api/chat/sessions` | POST | 创建会话 |
 | `/api/chat/sessions/{id}` | DELETE | 删除会话 |
 | `/api/chat/sessions/{id}/messages` | GET | 获取会话历史 |
+
+---
+
+## 工具体系
+
+### 查询工具（query_*）
+
+| 工具 | 说明 | 支持的筛选条件 |
+|------|------|---------------|
+| `query_coupons` | 查询优惠券 | status |
+| `query_customer` | 查询顾客 | keyword（姓名/手机号） |
+| `query_refunds` | 查询退款 | status, customer_name |
+| `query_feedbacks` | 查询评价 | status, customer_name |
+| `query_inventory` | 查询库存 | keyword（物料名） |
+| `query_game_sessions` | 查询场次 | status, customer_name |
+
+### 操作工具（调用 Java 后端 API）
+
+| 工具 | Java API | 说明 |
+|------|----------|------|
+| `grant_coupon` | POST /api/couponUsagesGrant | 发放优惠券 |
+| `refund_approve` | PUT /api/purchasesRefundsApprove | 批准退款 |
+| `refund_reject` | PUT /api/purchasesRefundsReject | 拒绝退款 |
+| `game_session_checkin` | POST /api/gameSessionsCheckin | 核销入座 |
+| `game_session_finish` | PUT /api/gameSessionsFinish | 结束游玩 |
+| `material_inbound` | POST /api/inventoryInbound | 物料入库 |
+| `material_outbound` | POST /api/inventoryOutbound | 物料出库 |
+| `reply_feedback` | PUT /api/feedbacks/reply | 回复评价 |
+| `send_notification` | POST /api/notificationsSend | 发送通知 |
 
 ---
 
@@ -259,6 +344,37 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 ---
 
 ## 更新日志
+
+### v0.5.0 (2026-06-20)
+
+**Router 优化**
+- 合并三个检查方法为 `_check_question`（一次 LLM 调用）
+- 查询工具能力表，LLM 知道何时用 tool/nl2sql
+- JSON 解析失败重试机制（最多 2 次）
+- 智能 fallback（操作类→TOOL，其他→RAG）
+
+**Agent Loop**
+- LLM 自主规划参数获取（TOOL_REQUIREMENTS 驱动）
+- 支持 extract 模式（first/all_concat/value）
+- 支持排除逻辑（exclude_ids/exclude_names）
+- 支持多值查询（如"张三和李四"）
+- 参数类型自动转换
+
+**多任务批量确认**
+- SubTask 增加 tool_name 字段
+- Supervisor 支持操作型子任务的确认流程
+- 新增 POST /api/chat/batch_confirm 端点
+- 前端 BatchConfirmCard 组件（checkbox + 输入框）
+
+**操作工具统一**
+- 所有 9 个操作工具改为调用 Java 后端 API
+- 新增 backend_client.py 封装 Java API 调用
+- 修复 token/operator_id 注入问题
+
+**其他改进**
+- `_check_question_validity` 和 `_check_need_clarification` 增加上下文传递
+- Agent Loop 不校验 required 参数（由工具 confirm 弹窗处理）
+- Supervisor 任务在 SSE 断开后自动取消
 
 ### v0.4.0 (2026-06-13)
 
