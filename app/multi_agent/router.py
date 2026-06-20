@@ -744,6 +744,162 @@ class TaskRouter:
         
         return False
     
+    async def _check_question(self, question: str, shop_name: str = "", history_context: str = "") -> dict:
+        """
+        综合检查用户问题（合并有效性、上下文、追问三个检查）
+        
+        一次 LLM 调用完成三个判断：
+        1. is_valid: 输入是否有效
+        2. is_context_question: 是否是上下文相关问题
+        3. need_clarify: 是否需要追问
+        
+        Args:
+            question: 用户问题
+            shop_name: 店铺名称
+            history_context: 对话历史上下文
+        
+        Returns:
+            {"is_valid": bool, "is_context_question": bool, "need_clarify": bool, "reason": str, "missing_info": str}
+        """
+        question = question.strip()
+        
+        # 快速问题示例
+        default_quick_questions = [
+            "今天营业额多少？",
+            "本月经营情况如何？",
+            "有哪些套餐？",
+            "库存还有多少？",
+        ]
+        
+        # 1. 规则检查：快速判断无效输入
+        import re
+        
+        if len(question) < 2:
+            return {
+                "is_valid": False,
+                "is_context_question": False,
+                "need_clarify": False,
+                "reason": "输入太短",
+                "missing_info": "",
+                "quick_questions": default_quick_questions
+            }
+        
+        if re.match(r'^[\d\s\.\+\-\*\/\=\!\@\#\$\%\^\&\(\)]+$', question):
+            return {
+                "is_valid": False,
+                "is_context_question": False,
+                "need_clarify": False,
+                "reason": "纯数字或特殊字符",
+                "missing_info": "",
+                "quick_questions": default_quick_questions
+            }
+        
+        if len(set(question.replace(' ', ''))) == 1:
+            return {
+                "is_valid": False,
+                "is_context_question": False,
+                "need_clarify": False,
+                "reason": "无意义的重复字符",
+                "missing_info": "",
+                "quick_questions": default_quick_questions
+            }
+        
+        # 2. LLM 综合判断
+        try:
+            history_section = ""
+            if history_context:
+                history_section = f"""
+## 对话历史
+{history_context}
+"""
+            
+            shop_section = ""
+            if shop_name:
+                shop_section = f"""
+## 店铺信息
+店铺名称：{shop_name}
+"""
+            
+            prompt = f"""你是店铺智能助手的路由判断模块。你的职责是帮助店长管理店铺，包括查询数据（营业额、顾客、库存）、执行操作（退款审批、优惠券发放、核销）、回答问题。
+
+判断用户输入的性质，决定如何处理。
+
+## 用户输入
+"{question}"
+{history_section}
+{shop_section}
+## 判断任务
+
+请判断以下三个问题，并返回所有判断结果：
+
+### 1. 输入是否有效？
+
+有效的输入：
+- 查询请求："今天营业额多少"、"库存还有多少"
+- 操作指令："同意林志玲退款"、"拒绝黄晓明的"、"发放优惠券"
+- 追问/纠正："处理中不就是待处理嘛"、"那林志玲的呢"
+- 问候："你好"、"在吗"
+
+无效的输入：
+- 无意义字符："111"、"aaa"、"..."
+- 测试输入："test"、"测试"
+- 不完整的输入："帮我"、"查询"
+- 纯表情符号
+
+### 2. 是否是上下文相关问题？
+
+上下文问题的特征：
+- 引用之前对话内容："那林志玲的呢"、"上面那个呢"
+- 纠正之前的回答："处理中不就是待处理嘛"、"你说错了"
+- 确认之前的结论："所以总共是3个对吧"
+
+判断方法：查看对话历史，如果用户的问题需要结合之前的对话才能理解，就是上下文问题。
+
+注意：上下文问题可能是查询（需要查数据）或操作（需要执行），不一定是纯文本回答。
+
+### 3. 是否需要追问？
+
+需要追问的情况：
+- 问题缺少关键信息，且对话历史中也没有
+- 示例：用户只说"退款"，没有说哪个顾客、是批准还是拒绝
+
+不需要追问的情况：
+- 问题意图清晰，可以直接执行
+- 可以从对话历史中推断出完整意图
+- 示例："同意林志玲退款"（意图清晰，可以执行）
+
+## 路由决策优先级（供参考）
+1. is_valid=false → 无效输入，返回提示
+2. is_context_question=true → 上下文问题，交给 LLM 基于历史回答
+3. need_clarify=true → 需要追问，返回追问提示
+4. 以上都不是 → 继续路由判断
+
+## 输出格式
+返回 JSON：
+{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": true/false, "reason": "判断原因（简短说明，如'明确的操作指令'、'引用之前的退款查询'）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写，如'哪个顾客的退款'）"}}"""
+            
+            from langchain_core.messages import HumanMessage
+            response = await self.llm.ainvoke([HumanMessage(content=prompt)])
+            
+            from app.utils.json_parser import safe_parse_json
+            result = safe_parse_json(response.content.strip())
+            
+            if result and isinstance(result, dict):
+                # 确保所有字段存在
+                result.setdefault("is_valid", True)
+                result.setdefault("is_context_question", False)
+                result.setdefault("need_clarify", False)
+                result.setdefault("reason", "")
+                result.setdefault("missing_info", "")
+                result["quick_questions"] = default_quick_questions
+                return result
+            
+            # 解析失败，默认有效
+            return {"is_valid": True, "is_context_question": False, "need_clarify": False, "reason": "判断失败", "missing_info": "", "quick_questions": default_quick_questions}
+        except Exception as e:
+            print(f"[Router] 问题检查失败: {str(e)}")
+            return {"is_valid": True, "is_context_question": False, "need_clarify": False, "reason": "判断异常", "missing_info": "", "quick_questions": default_quick_questions}
+    
     async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
         """
         判断任务路由
@@ -776,35 +932,7 @@ class TaskRouter:
         if shop_context and "历史对话" in shop_context:
             history_context = shop_context
         
-        # 3. 上下文相关问题
-        if self._is_context_question(task, history_context):
-            return {
-                "mode": "single",
-                "agent": AgentType.LLM,
-                "reasoning": "上下文相关问题，使用 LLM 基于历史回答",
-                "understanding": "用户在追问之前对话中的内容",
-                "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
-                "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
-                "complexity": "simple"
-            }
-        
-        # 4. 检查问题是否有效（不是无意义内容）
-        validity = await self._check_question_validity(task, history_context)
-        if not validity.get("is_valid"):
-            print(f"[Router] 问题无效: {validity.get('reason')}")
-            return {
-                "mode": "clarify",
-                "agent": None,
-                "reasoning": validity.get("reason", "问题不明确"),
-                "understanding": task,
-                "analysis": "",
-                "plan": [],
-                "complexity": "simple",
-                "clarification": validity.get("suggestion", "我没有理解您的意思，请问您想了解什么？"),
-                "quick_questions": validity.get("quick_questions", [])
-            }
-        
-        # 5. 检查是否需要追问
+        # 3. 综合检查（合并有效性、上下文、追问三个检查）
         shop_name = ""
         if shop_context:
             for line in shop_context.split("\n"):
@@ -812,23 +940,52 @@ class TaskRouter:
                     shop_name = line.split("：")[-1].strip() if "：" in line else line.split(":")[-1].strip()
                     break
         
-        clarification = await self._check_need_clarification(task, shop_name, history_context)
-        if clarification.get("need_clarify"):
-            missing_info = clarification.get("missing_info", "")
-            print(f"[Router] 需要追问，缺少信息: {missing_info}")
+        check_result = await self._check_question(task, shop_name, history_context)
+        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, reason={check_result.get('reason')}")
+        
+        # 3a. 无效输入
+        if not check_result.get("is_valid"):
             return {
                 "mode": "clarify",
                 "agent": None,
-                "reasoning": clarification.get("reason", "问题需要更多信息"),
+                "reasoning": check_result.get("reason", "问题不明确"),
                 "understanding": task,
                 "analysis": "",
                 "plan": [],
                 "complexity": "simple",
-                "clarification": clarification.get("clarify_message", "请问您想了解什么？"),
-                "quick_questions": clarification.get("quick_questions", [])
+                "clarification": "我没有理解您的意思，请问您想了解什么？",
+                "quick_questions": check_result.get("quick_questions", [])
             }
         
-        # 6. 检查缓存
+        # 3b. 上下文相关问题
+        if check_result.get("is_context_question"):
+            return {
+                "mode": "single",
+                "agent": AgentType.LLM,
+                "reasoning": check_result.get("reason", "上下文相关问题"),
+                "understanding": "用户在追问之前对话中的内容",
+                "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
+                "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
+                "complexity": "simple"
+            }
+        
+        # 3c. 需要追问
+        if check_result.get("need_clarify"):
+            missing_info = check_result.get("missing_info", "")
+            print(f"[Router] 需要追问，缺少信息: {missing_info}")
+            return {
+                "mode": "clarify",
+                "agent": None,
+                "reasoning": check_result.get("reason", "问题需要更多信息"),
+                "understanding": task,
+                "analysis": "",
+                "plan": [],
+                "complexity": "simple",
+                "clarification": f"请问{missing_info}？" if missing_info else "请问您想了解什么？",
+                "quick_questions": check_result.get("quick_questions", [])
+            }
+        
+        # 4. 检查缓存
         cache_key = _get_cache_key(task, shop_context)
         if cache_key in _plan_cache:
             print(f"[Router] 命中计划缓存: {cache_key}")
