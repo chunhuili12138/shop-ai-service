@@ -555,10 +555,12 @@ async def batch_confirm_action(
         if request.session_id:
             try:
                 session_mgr = get_session_manager()
+                from app.tools import TOOL_DISPLAY_NAMES
                 summary_parts = []
                 for r in results:
                     status = "✓" if r["success"] else "✗"
-                    summary_parts.append(f"{status} {r['action']}: {r['msg']}")
+                    action_name = TOOL_DISPLAY_NAMES.get(r["action"], r["action"])
+                    summary_parts.append(f"{status} {action_name}: {r['msg']}")
                 summary = f"批量操作完成 (成功 {success_count}, 失败 {fail_count}):\n" + "\n".join(summary_parts)
                 session_mgr.add_message(request.session_id, "assistant", summary)
             except Exception as e:

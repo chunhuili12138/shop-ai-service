@@ -849,10 +849,19 @@ class StreamHandler:
                         if self.session_id:
                             try:
                                 from app.rag.session import get_session_manager
+                                from app.tools import TOOL_DISPLAY_NAMES
                                 session_mgr = get_session_manager()
                                 ops = batch_data.get("operations", [])
-                                ops_desc = "、".join([op.get("title", "") for op in ops])
-                                session_mgr.add_message(self.session_id, "assistant", f"【批量确认】{ops_desc}")
+                                ops_desc_parts = []
+                                for op in ops:
+                                    tool_name = op.get("tool_name", op.get("action", ""))
+                                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                                    title = op.get("title", display_name)
+                                    details = op.get("details", {})
+                                    detail_str = "、".join([f"{k}:{v}" for k, v in details.items()]) if details else ""
+                                    ops_desc_parts.append(f"{title}（{detail_str}）" if detail_str else title)
+                                ops_desc = "；".join(ops_desc_parts)
+                                session_mgr.add_message(self.session_id, "assistant", f"【待确认操作】{ops_desc}")
                             except Exception as e:
                                 print(f"[StreamHandler] 保存批量确认消息失败: {str(e)}")
                         yield self._format_sse("batch_confirm", batch_data, "批量确认")
@@ -3397,9 +3406,18 @@ Router 分析: {analysis}
                 if self.session_id:
                     try:
                         from app.rag.session import get_session_manager
+                        from app.tools import TOOL_DISPLAY_NAMES
                         session_mgr = get_session_manager()
-                        ops_desc = "、".join([op.get("title", "") for op in batch_confirms])
-                        session_mgr.add_message(self.session_id, "assistant", f"【批量确认】{ops_desc}")
+                        ops_desc_parts = []
+                        for op in batch_confirms:
+                            tool_name = op.get("tool_name", op.get("action", ""))
+                            display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
+                            title = op.get("title", display_name)
+                            details = op.get("details", {})
+                            detail_str = "、".join([f"{k}:{v}" for k, v in details.items()]) if details else ""
+                            ops_desc_parts.append(f"{title}（{detail_str}）" if detail_str else title)
+                        ops_desc = "；".join(ops_desc_parts)
+                        session_mgr.add_message(self.session_id, "assistant", f"【待确认操作】{ops_desc}")
                     except Exception as e:
                         print(f"[StreamHandler] 保存批量确认消息失败: {str(e)}")
                 yield self._format_sse("batch_confirm", batch_data, "批量确认")
