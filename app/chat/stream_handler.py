@@ -1040,17 +1040,11 @@ class StreamHandler:
 
         print(f"[StreamHandler] ========== 执行完成 ==========")
 
-        # 收集 AI 回复（从步骤结果中获取）
+        # 收集 AI 回复（从步骤结果中获取，用于 session 保存）
         success_results = [r.get("result", "") for r in step_results if r.get("success") and r.get("result")]
         final_result = "\n\n".join(success_results) if success_results else ""
         self._ai_response_parts.append(final_result)
         self._ai_response_data_type = "text"
-
-        
-
-        yield self._format_sse("answer", final_result, "最终答案")
-
-    
 
     # NL2SQL 结果缓存（避免重复查询）
     _nl2sql_cache = {}  # key: f"{shop_id}:{context_hash}", value: {"result": ..., "timestamp": ...}

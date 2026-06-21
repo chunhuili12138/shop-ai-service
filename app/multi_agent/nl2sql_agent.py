@@ -362,7 +362,7 @@ class NL2SQLAgent:
                                     history_context: str = "",
                                     route_context: str = "") -> List[str]:
         """
-        生成多个候选 SQL
+        生成多个候选 SQL（并行）
         
         Args:
             task: 用户问题
@@ -376,7 +376,8 @@ class NL2SQLAgent:
         Returns:
             候选 SQL 列表
         """
-        candidates = []
+        import asyncio
+        
         llm = get_chat_llm(temperature=0.3)  # 使用较高温度增加多样性
         
         from datetime import datetime
@@ -402,35 +403,50 @@ class NL2SQLAgent:
 
 注意：如果当前问题是省略句（如"本月呢？"、"那昨天呢？"），请结合历史对话理解完整意图。"""
         
-        for i in range(count):
+        # 构建 prompt（所有候选共享同一个 prompt）
+        prompt = SQL_GENERATION_PROMPT.format(
+            relevant_schema=schema,
+            few_shot_prompt=few_shot,
+            experience_prompt=experience,
+            task=enhanced_task,
+            mysql_rules=ALL_MYSQL_RULES,
+            current_date=current_date,
+        )
+        
+        # 并行生成候选 SQL
+        async def generate_one(index: int):
+            """生成单个候选 SQL"""
             try:
-                prompt = SQL_GENERATION_PROMPT.format(
-                    relevant_schema=schema,
-                    few_shot_prompt=few_shot,
-                    experience_prompt=experience,
-                    task=enhanced_task,
-                    mysql_rules=ALL_MYSQL_RULES,
-                    current_date=current_date,
-                )
-                
                 response = await llm.ainvoke([HumanMessage(content=prompt)])
                 raw_content = response.content.strip()
                 
-                # 调试日志
-                print(f"[NL2SQLAgent] 候选 {i+1} LLM 返回: {raw_content}")
+                print(f"[NL2SQLAgent] 候选 {index+1} LLM 返回: {raw_content}")
                 
                 sql = sanitize_sql(raw_content)
                 
-                # 调试日志
-                print(f"[NL2SQLAgent] 候选 {i+1} 清理后: {sql}")
+                print(f"[NL2SQLAgent] 候选 {index+1} 清理后: {sql}")
                 
                 if sql.upper().startswith("SELECT"):
-                    candidates.append(sql)
-                    print(f"[NL2SQLAgent] 候选 {i+1} 有效")
+                    print(f"[NL2SQLAgent] 候选 {index+1} 有效")
+                    return sql
                 else:
-                    print(f"[NL2SQLAgent] 候选 {i+1} 无效（不是 SELECT 语句）")
+                    print(f"[NL2SQLAgent] 候选 {index+1} 无效（不是 SELECT 语句）")
+                    return None
             except Exception as e:
-                print(f"[NL2SQLAgent] 候选 {i+1} 生成失败: {str(e)}")
+                print(f"[NL2SQLAgent] 候选 {index+1} 生成失败: {str(e)}")
+                return None
+        
+        # 并行执行所有候选生成任务
+        tasks = [generate_one(i) for i in range(count)]
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # 收集有效结果
+        candidates = []
+        for i, result in enumerate(results):
+            if isinstance(result, Exception):
+                print(f"[NL2SQLAgent] 候选 {i+1} 异常: {str(result)}")
+            elif result is not None:
+                candidates.append(result)
         
         return candidates
     
