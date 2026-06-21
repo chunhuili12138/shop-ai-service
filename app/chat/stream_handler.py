@@ -1802,7 +1802,8 @@ Router 分析: {analysis}
   - 自由文本参数（reason、remark、备注等）：on_empty 填 "skip"（留空让工具的 confirm 弹窗让用户填写）
 - 不要编造不存在的数据
 - 不要为自由文本字段（reason、remark、备注）设置 on_empty="select"
-- 只返回 JSON"""
+- 不要输出任何解释或 markdown 代码块
+- 只返回一个完整的 JSON 对象，所有字符串用双引号，布尔值用小写 true/false"""
 
             from app.llm import get_chat_llm
             from langchain_core.messages import HumanMessage
@@ -1815,18 +1816,13 @@ Router 分析: {analysis}
             plan = None
             max_retries = 2
             for attempt in range(max_retries + 1):
-                if "{" in content:
-                    json_str = content[content.index("{"):content.rindex("}") + 1]
-                    import json as _json
-                    try:
-                        plan = _json.loads(json_str)
-                        break
-                    except _json.JSONDecodeError:
-                        pass
+                plan = self._extract_json(content)
+                if plan:
+                    break
                 
                 if attempt < max_retries:
                     print(f"[AgentLoop] JSON 解析失败，重试 {attempt + 1}/{max_retries}")
-                    retry_prompt = system_prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字。"
+                    retry_prompt = system_prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字、解释或 markdown 代码块。"
                     resp = await llm.ainvoke([HumanMessage(content=retry_prompt)])
                     content = resp.content.strip()
             
@@ -1952,6 +1948,50 @@ Router 分析: {analysis}
         else:
             return value
 
+    def _extract_json(self, content: str):
+        """从 LLM 输出中提取 JSON 对象（支持多种格式）"""
+        import json as _json
+        
+        if not content:
+            return None
+        
+        # 1. 尝试直接解析
+        try:
+            return _json.loads(content)
+        except _json.JSONDecodeError:
+            pass
+        
+        # 2. 尝试提取 ```json ``` 代码块
+        if "```json" in content:
+            start = content.find("```json") + 7
+            end = content.find("```", start)
+            if end > start:
+                try:
+                    return _json.loads(content[start:end].strip())
+                except _json.JSONDecodeError:
+                    pass
+        
+        # 3. 尝试提取 ``` ``` 代码块
+        if "```" in content:
+            start = content.find("```") + 3
+            end = content.find("```", start)
+            if end > start:
+                try:
+                    return _json.loads(content[start:end].strip())
+                except _json.JSONDecodeError:
+                    pass
+        
+        # 4. 尝试提取第一个 { 到最后一个 }
+        if "{" in content:
+            start = content.index("{")
+            end = content.rindex("}") + 1
+            try:
+                return _json.loads(content[start:end])
+            except _json.JSONDecodeError:
+                pass
+        
+        return None
+
     def _build_agent_loop_select(self, tool_name: str, param_name: str, result_text: str, params_config: dict) -> dict:
         """构建 Agent Loop 的选择弹窗（从 NL2SQL 结果中选择）"""
         from app.tools import TOOL_DISPLAY_NAMES
@@ -2040,10 +2080,13 @@ Router 分析: {analysis}
                 return {"success": False, "result": "", "error": "当前没有物料"}
 
         elif param_name == "refund_id":
-            # 查询所有待处理退款
+            # 查询所有待处理退款（通过 purchases 表关联 customers）
             from app.nl2sql.executor import execute_sql
             results = execute_sql(
-                "SELECT rr.id, c.nickname, rr.refund_amount FROM refund_records rr LEFT JOIN customers c ON rr.customer_id = c.id WHERE rr.shop_id = :sid AND rr.status=1 AND (rr.is_deleted=0 OR rr.is_deleted IS NULL)",
+                "SELECT rr.id, c.nickname, rr.refund_amount FROM refund_records rr "
+                "JOIN purchases p ON rr.purchase_id = p.id "
+                "JOIN customers c ON p.customer_id = c.id "
+                "WHERE rr.shop_id = :sid AND rr.status=1 AND (rr.is_deleted=0 OR rr.is_deleted IS NULL)",
                 {"sid": shop_id}
             )
             if results:

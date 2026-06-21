@@ -209,6 +209,23 @@ class SupervisorAgent:
                 # 3. 评审结果
                 if result.success and result.result:
                     await self._notify_progress("结果汇总", "正在汇总分析结果...")
+                    
+                    # 检查是否包含 batch_confirm（操作确认弹窗），如果是则跳过评审
+                    has_batch_confirm = False
+                    if result.metadata and result.metadata.get("batch_confirm"):
+                        has_batch_confirm = True
+                    if "batch_confirm" in str(result.result):
+                        has_batch_confirm = True
+                    
+                    if has_batch_confirm:
+                        # 包含 batch_confirm，跳过评审，直接返回成功
+                        print(f"[Supervisor] 检测到 batch_confirm，跳过评审")
+                        review = {"passed": True, "score": 90, "issues": [], "suggestion": "操作确认弹窗已生成"}
+                        best_result = result
+                        best_review = review
+                        await self._notify_progress("完成", "处理完成", "success")
+                        break
+                    
                     review = await self._review_result(task, result.result)
                     last_review = review
                     score = review.get("score", 0)
