@@ -24,6 +24,12 @@ LLM_SYSTEM_PROMPT = """你是一个数据检索助手。根据用户问题和上
 2. 如果数据不足，诚实说明并给出通用建议
 3. 不要添加角色扮演内容
 
+【任务执行结果使用规则（重要）】
+1. 如果用户消息中有"任务执行结果"部分，这就是你要用的数据
+2. 不要重新查询，直接基于这些数据生成回答
+3. 如果数据中有"0"值（如核销0次），这是有效数据，不是"没有数据"
+4. 基于数据生成总结分析，不要说"未查到数据"
+
 【绝对禁止编造数据】
 - 如果没有提供具体数据（如营业额、顾客名、订单号等），你必须说"未查到相关数据"或"暂无数据"
 - 绝对不允许自己创造、编造、虚构任何具体数据
@@ -51,6 +57,8 @@ class LLMAgent:
             **kwargs: 额外参数
                 - route_info: 路由分析结果
                 - history_context: 历史上下文
+                - task_results: 任务执行结果列表
+                    [{"id": 1, "status": "success", "result": "..."}, ...]
         
         Returns:
             执行结果
@@ -63,6 +71,7 @@ class LLMAgent:
             # 获取额外参数
             route_info = kwargs.get("route_info", "")
             history_context = kwargs.get("history_context", "")
+            task_results = kwargs.get("task_results", [])
             
             # 构建包含上下文的提示词
             current_date = datetime.now().strftime("%Y年%m月%d日")
@@ -87,6 +96,16 @@ class LLMAgent:
 {history_context}
 
 {user_message}"""
+            
+            # 添加任务执行结果（独立的部分，不混入任务描述）
+            if task_results:
+                results_text = "\n\n## 任务执行结果（必须基于这些数据回答）\n"
+                for tr in task_results:
+                    status_icon = "✓" if tr.get("status") == "success" else "✗"
+                    task_desc = tr.get("task", f"子任务{tr.get('id', '?')}")
+                    result_text = tr.get("result", "无结果")
+                    results_text += f"{status_icon} {task_desc}: {result_text}\n"
+                user_message += results_text
             
             # 调用 LLM
             messages = [

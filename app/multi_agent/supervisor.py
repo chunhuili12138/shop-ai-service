@@ -743,14 +743,16 @@ class SupervisorAgent:
         trace=None
     ) -> AgentResult:
         """
-        串行执行子任务，支持操作确认
+        串行执行子任务，支持操作确认和重试
         
         流程：
         1. 按拓扑排序执行子任务
         2. 查询型子任务：立即执行，结果存入 query_context
         3. 操作型子任务：调用 Agent Loop，收集 confirm_data
-        4. 所有子任务完成后，返回 batch_confirm（如有操作需要确认）
+        4. 失败的子任务自动重试（最多 2 次）
+        5. 所有子任务完成后，返回 batch_confirm（如有操作需要确认）
         """
+        max_retries = 2
         completed = {}
         query_context = {}  # 存储查询结果，供后续子任务使用
         pending_confirms = []  # 存储需要确认的操作
@@ -784,86 +786,107 @@ class SupervisorAgent:
                 completed[sub_task.id] = error_result
                 continue
             
-            # 通知进度
-            await self._notify_progress(
-                f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}", 
-                f"正在执行: {sub_task.description}"
-            )
-            
-            print(f"[Supervisor] 执行子任务 {sub_task.id}: {sub_task.task} [{sub_task.agent}]")
-            
-            # 根据子任务类型选择执行方式
-            if sub_task.tool_name:
-                # ===== 操作型子任务 =====
-                result_dict = await self._execute_operation_sub_task(
-                    sub_task, context, query_context, image_url, trace
-                )
-                
-                if result_dict.get("confirm_data"):
-                    pending_confirms.append(result_dict["confirm_data"])
-                    completed[sub_task.id] = AgentResult(
-                        agent=AgentType.TOOL,
-                        result="等待用户确认",
-                        confidence=0.9,
-                        success=True,
+            # 执行子任务（带重试）
+            result = None
+            for attempt in range(max_retries + 1):
+                # 通知进度
+                if attempt == 0:
+                    await self._notify_progress(
+                        f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}", 
+                        f"正在执行: {sub_task.description}"
                     )
+                else:
+                    await self._notify_progress(
+                        f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}", 
+                        f"重试第 {attempt} 次: {sub_task.description}",
+                        "warning"
+                    )
+                
+                print(f"[Supervisor] 执行子任务 {sub_task.id} (第 {attempt + 1} 次): {sub_task.task} [{sub_task.agent}]")
+                
+                # 根据子任务类型选择执行方式
+                try:
+                    if sub_task.tool_name:
+                        # ===== 操作型子任务 =====
+                        result_dict = await self._execute_operation_sub_task(
+                            sub_task, context, query_context, image_url, trace
+                        )
+                        
+                        if result_dict.get("confirm_data"):
+                            pending_confirms.append(result_dict["confirm_data"])
+                            result = AgentResult(
+                                agent=AgentType.TOOL,
+                                result="等待用户确认",
+                                confidence=0.9,
+                                success=True,
+                            )
+                        elif result_dict.get("select_data"):
+                            # 需要用户选择，立即返回
+                            return AgentResult(
+                                agent=AgentType.SUPERVISOR,
+                                result="",
+                                confidence=0.9,
+                                metadata={"select_data": result_dict["select_data"]}
+                            )
+                        else:
+                            # 操作直接完成（不需要确认）
+                            result = AgentResult(
+                                agent=AgentType.TOOL,
+                                result=result_dict.get("result", ""),
+                                confidence=0.9,
+                                success=result_dict.get("success", False),
+                            )
+                    else:
+                        # ===== 查询型子任务 =====
+                        result = await self._execute_query_sub_task(
+                            sub_task, context, query_context, image_url, trace
+                        )
+                except Exception as e:
+                    print(f"[Supervisor] 子任务 {sub_task.id} 执行异常: {str(e)}")
+                    result = AgentResult(
+                        agent=sub_task.agent,
+                        result=f"执行异常: {str(e)}",
+                        confidence=0.0,
+                        success=False,
+                        error=str(e)
+                    )
+                
+                # 如果成功，跳出重试循环
+                if result and result.success:
+                    break
+                
+                # 如果失败且还有重试次数，继续重试
+                if attempt < max_retries:
+                    print(f"[Supervisor] 子任务 {sub_task.id} 失败，准备重试 ({attempt + 1}/{max_retries})")
+            
+            # 记录结果
+            completed[sub_task.id] = result
+            
+            if result and result.success:
+                if result.result:
+                    query_context[sub_task.id] = result.result
+                    query_results_text.append(result.result)
+                
+                # 通知成功
+                if sub_task.tool_name and pending_confirms:
                     await self._notify_progress(
                         f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
                         f"✓ {sub_task.description} - 等待确认",
                         "success"
                     )
-                elif result_dict.get("select_data"):
-                    # 需要用户选择，立即返回
-                    return AgentResult(
-                        agent=AgentType.SUPERVISOR,
-                        result="",
-                        confidence=0.9,
-                        metadata={"select_data": result_dict["select_data"]}
-                    )
                 else:
-                    # 操作直接完成（不需要确认）
-                    completed[sub_task.id] = AgentResult(
-                        agent=AgentType.TOOL,
-                        result=result_dict.get("result", ""),
-                        confidence=0.9,
-                        success=result_dict.get("success", False),
-                    )
-                    if result_dict.get("success"):
-                        await self._notify_progress(
-                            f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
-                            f"✓ 完成: {sub_task.description}",
-                            "success"
-                        )
-                    else:
-                        await self._notify_progress(
-                            f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
-                            f"✗ 失败: {sub_task.description}",
-                            "error"
-                        )
-            else:
-                # ===== 查询型子任务 =====
-                result = await self._execute_query_sub_task(
-                    sub_task, context, query_context, image_url, trace
-                )
-                completed[sub_task.id] = result
-                query_context[sub_task.id] = result.result  # 存储查询结果
-                
-                if result.result:
-                    query_results_text.append(result.result)
-                
-                if result.success:
                     await self._notify_progress(
                         f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
                         f"✓ 完成: {sub_task.description}",
                         "success"
                     )
-                else:
-                    await self._notify_progress(
-                        f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
-                        f"✗ 失败: {sub_task.description}",
-                        "error"
-                    )
-                    print(f"[Supervisor] 子任务 {sub_task.id} 执行失败: {result.error}")
+            else:
+                await self._notify_progress(
+                    f"步骤 {sub_task.id}/{len(sorted_sub_tasks)}",
+                    f"✗ 失败: {sub_task.description}",
+                    "error"
+                )
+                print(f"[Supervisor] 子任务 {sub_task.id} 最终失败: {result.error if result else '未知错误'}")
         
         # 如果有操作需要确认，返回 batch_confirm
         if pending_confirms:
@@ -940,25 +963,27 @@ class SupervisorAgent:
                 success=False,
             )
         
-        # 构建查询上下文（包含之前的查询结果）
-        context_text = ""
-        if query_context:
-            context_text = "\n\n## 之前的查询结果\n"
-            for task_id, result in query_context.items():
-                if result:
-                    # 截断过长的结果
-                    result_preview = result[:300] + "..." if len(result) > 300 else result
-                    context_text += f"- 任务{task_id}: {result_preview}\n"
+        # 构建任务执行结果（独立参数，不拼接到任务描述里）
+        task_results = []
+        for task_id, result in query_context.items():
+            if result:
+                task_results.append({
+                    "id": task_id,
+                    "status": "success",
+                    "result": result[:500] if len(result) > 500 else result
+                })
         
         # 传递历史上下文和路由上下文
         extra_kwargs = {}
+        if task_results:
+            extra_kwargs["task_results"] = task_results
         if hasattr(self, '_current_history_context') and self._current_history_context:
             extra_kwargs["history_context"] = self._current_history_context
         if hasattr(self, '_current_route_context') and self._current_route_context:
             extra_kwargs["route_context"] = self._current_route_context
         
         result = await agent.execute(
-            sub_task.task + context_text, 
+            sub_task.task, 
             context, 
             image_url=image_url,
             **extra_kwargs
