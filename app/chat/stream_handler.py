@@ -1038,10 +1038,16 @@ class StreamHandler:
         ):
             yield sse_event
             # 收集流式输出的 answer 事件内容
-            if isinstance(sse_event, dict) and sse_event.get("type") == "answer":
-                chunk_content = sse_event.get("content", "")
-                if chunk_content:
-                    streaming_chunks.append(chunk_content)
+            # sse_event 是 SSE 格式字符串: "data: {json}\n\n"
+            if isinstance(sse_event, str) and sse_event.startswith("data: "):
+                try:
+                    event_data = json.loads(sse_event[6:].strip())
+                    if event_data.get("type") == "answer":
+                        chunk_content = event_data.get("content", "")
+                        if chunk_content:
+                            streaming_chunks.append(chunk_content)
+                except (json.JSONDecodeError, IndexError):
+                    pass
 
         print(f"[StreamHandler] ========== 执行完成 ==========")
 
