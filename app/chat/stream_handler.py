@@ -1060,9 +1060,9 @@ class StreamHandler:
 
         print(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context}")
 
-        # 检查缓存
+        # 检查缓存（用 original_task 做 key，而不是 context，因为 context 包含动态内容）
         import hashlib
-        cache_key = f"{self.user_context.shop_id}:{hashlib.md5(context.encode()).hexdigest()}"
+        cache_key = f"{self.user_context.shop_id}:{hashlib.md5(original_task.encode()).hexdigest()}"
         now = time.time()
         
         if cache_key in self._nl2sql_cache:
