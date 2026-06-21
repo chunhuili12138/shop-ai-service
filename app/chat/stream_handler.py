@@ -1026,8 +1026,8 @@ class StreamHandler:
 
         yield self._format_sse("processing", "正在汇总结果...", "汇总")
 
-        # 流式调用 LLM 汇总
-        final_result = ""
+        # 流式调用 LLM 汇总，同时收集流式输出内容
+        streaming_chunks = []
         async for sse_event in self._final_summarize_stream(
             user_message=message,
             understanding=understanding,
@@ -1037,13 +1037,21 @@ class StreamHandler:
             history_context=history_context,
         ):
             yield sse_event
+            # 收集流式输出的 answer 事件内容
+            if isinstance(sse_event, dict) and sse_event.get("type") == "answer":
+                chunk_content = sse_event.get("content", "")
+                if chunk_content:
+                    streaming_chunks.append(chunk_content)
 
         print(f"[StreamHandler] ========== 执行完成 ==========")
 
-        # 收集 AI 回复（从步骤结果中获取，用于 session 保存）
-        success_results = [r.get("result", "") for r in step_results if r.get("success") and r.get("result")]
-        final_result = "\n\n".join(success_results) if success_results else ""
-        self._ai_response_parts.append(final_result)
+        # 保存到 session：优先使用 LLM 格式化后的内容，降级使用原始步骤结果
+        if streaming_chunks:
+            self._ai_response_parts.append("".join(streaming_chunks))
+        else:
+            success_results = [r.get("result", "") for r in step_results if r.get("success") and r.get("result")]
+            final_result = "\n\n".join(success_results) if success_results else ""
+            self._ai_response_parts.append(final_result)
         self._ai_response_data_type = "text"
 
     # NL2SQL 结果缓存（避免重复查询）
