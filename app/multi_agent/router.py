@@ -1048,9 +1048,11 @@ class TaskRouter:
                     break
         
         check_result = await self._check_question(task, shop_name, history_context)
-        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, requery={check_result.get('need_requery')}, reason={check_result.get('reason')}")
+        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, requery={check_result.get('need_requery')}, operation={check_result.get('is_operation')}, reason={check_result.get('reason')}")
         
-        # 3a. 无效输入
+        # 路由决策（按优先级顺序）
+        
+        # 4a. 无效输入
         if not check_result.get("is_valid"):
             return {
                 "mode": "clarify",
@@ -1064,34 +1066,7 @@ class TaskRouter:
                 "quick_questions": check_result.get("quick_questions", [])
             }
         
-        # 3b. 上下文相关问题（根据 is_operation 和 need_requery 决定路由）
-        if check_result.get("is_context_question"):
-            if check_result.get("need_requery"):
-                # 需要重新查询数据，直接路由到 nl2sql
-                print(f"[Router] 上下文问题需要重新查询数据，直接路由到 nl2sql")
-                return {
-                    "mode": "single",
-                    "agent": AgentType.NL2SQL,
-                    "reasoning": check_result.get("reason", "用户需要重新查询数据"),
-                    "understanding": task,
-                    "analysis": "用户需要重新查询数据来验证或确认",
-                    "plan": [{"step": 1, "action": task, "tool": "nl2sql", "is_critical": True}],
-                    "complexity": "simple"
-                }
-            elif not check_result.get("is_operation"):
-                # 纯文本上下文问题（如"处理中不就是待处理嘛"），直接返回 LLM Agent
-                return {
-                    "mode": "single",
-                    "agent": AgentType.LLM,
-                    "reasoning": check_result.get("reason", "上下文相关问题"),
-                    "understanding": "用户在追问之前对话中的内容",
-                    "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
-                    "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
-                    "complexity": "simple"
-                }
-            # 操作类上下文问题，继续路由到 COMPLEXITY_PROMPT
-        
-        # 3c. 需要追问
+        # 4b. 需要追问
         if check_result.get("need_clarify"):
             missing_info = check_result.get("missing_info", "")
             print(f"[Router] 需要追问，缺少信息: {missing_info}")
@@ -1106,6 +1081,22 @@ class TaskRouter:
                 "clarification": f"请问{missing_info}？" if missing_info else "请问您想了解什么？",
                 "quick_questions": check_result.get("quick_questions", [])
             }
+        
+        # 4c. 纯文本上下文问题（不需要查询数据库，不需要执行操作）
+        if check_result.get("is_context_question") and not check_result.get("is_operation") and not check_result.get("need_requery"):
+            return {
+                "mode": "single",
+                "agent": AgentType.LLM,
+                "reasoning": check_result.get("reason", "上下文相关问题"),
+                "understanding": "用户在追问之前对话中的内容",
+                "analysis": "这是一个上下文相关问题，需要结合历史对话理解",
+                "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
+                "complexity": "simple"
+            }
+        
+        # 4d. 其他情况 → 继续路由到 COMPLEXITY_PROMPT
+        # 包括：新问题、操作类上下文问题、需要重新查询的上下文问题
+        # need_requery 作为上下文传递给 COMPLEXITY_PROMPT
         
         # 4. 检查缓存
         cache_key = _get_cache_key(task, shop_context)
@@ -1122,6 +1113,16 @@ class TaskRouter:
             # 添加店铺上下文和历史上下文
             if shop_context:
                 prompt += f"\n\n## 上下文信息\n{shop_context}"
+            
+            # 添加 need_requery 上下文（用户需要查询数据）
+            if check_result.get("need_requery"):
+                prompt += """
+
+## 重要：用户需要查询数据
+用户的问题需要从数据库获取信息才能回答。请根据查询工具能力表判断：
+- 如果查询工具支持用户的筛选条件 → 使用查询工具
+- 如果查询工具不支持（需要聚合、复杂筛选等） → 使用 nl2sql
+"""
             
             # 添加明确指令：如何使用历史上下文
             if shop_context and "历史对话" in shop_context:
