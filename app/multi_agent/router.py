@@ -439,15 +439,15 @@ TASK_SPLIT_PROMPT = """分析以下复杂任务，将其拆分成多个子任务
 - vision: 图像理解（OCR文字识别、图像分析等）
 
 ## 操作类工具（agent=tool 时必须指定 tool_name）
-- refund_approve: 批准退款
-- refund_reject: 拒绝退款
-- game_session_checkin: 核销入座
-- game_session_finish: 结束游玩
-- material_inbound: 物料入库
-- material_outbound: 物料出库
-- grant_coupon: 发放优惠券
-- reply_feedback: 回复评价
-- send_notification: 发送通知
+- refund_approve: 批准退款（需要 refund_id）
+- refund_reject: 拒绝退款（需要 refund_id, reason）
+- game_session_checkin: 核销入座（需要 customer_id, customer_session_id）
+- game_session_finish: 结束游玩（需要 game_session_id）
+- material_inbound: 物料入库（需要 material_id, quantity）
+- material_outbound: 物料出库（需要 material_id, quantity）
+- grant_coupon: 发放优惠券（需要 coupon_id, customer_ids）
+- reply_feedback: 回复评价（需要 feedback_id, reply_content）
+- send_notification: 发送通知（需要 recipient_ids, recipient_type, title, content）
 
 ## 重要规则（必须遵守）
 
@@ -462,39 +462,87 @@ TASK_SPLIT_PROMPT = """分析以下复杂任务，将其拆分成多个子任务
 - agent 不是 "tool" 时，tool_name 填空字符串 ""
 
 ### 拆分规则
-1. 每个子任务应该明确指定使用哪个 Agent
-2. 子任务之间应该清晰分离，避免重复
-3. 保持原始任务的语义，不要遗漏信息
-4. 如果子任务之间有依赖关系，必须指定 depends_on
-5. 查询类子任务应该放在操作类子任务之前
+1. **每个操作必须是独立的子任务**，不要将多个操作合并
+2. 查询类子任务必须放在操作类子任务之前
+3. 操作子任务必须指定 tool_name
+4. 子任务之间有依赖关系时，必须指定 depends_on
+5. 保持原始任务的语义，不要遗漏信息
 
 ## 示例
 
-示例1（经营分析）：
-任务："分析本月经营情况"
-拆分结果：
-[
-    {{"id": 1, "task": "查询本月营收数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月营业额、订单数、热销套餐", "depends_on": []}},
-    {{"id": 2, "task": "查询本月顾客数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月新顾客数、活跃顾客数", "depends_on": []}},
-    {{"id": 3, "task": "查询本月支出数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月各类支出", "depends_on": []}},
-    {{"id": 4, "task": "汇总分析并给出建议", "agent": "llm", "tool_name": "", "description": "基于以上数据进行分析并给出建议", "depends_on": [1, 2, 3]}}
-]
-
-示例2（操作类任务）：
+### 示例1：退款审批（多个操作）
 任务："黄晓明的审核通过，赵丽颖的审核拒绝"
-拆分结果：
 [
     {{"id": 1, "task": "查询黄晓明和赵丽颖的待处理退款信息", "agent": "nl2sql", "tool_name": "", "description": "获取退款记录ID", "depends_on": []}},
     {{"id": 2, "task": "批准黄晓明的退款", "agent": "tool", "tool_name": "refund_approve", "description": "调用退款批准工具", "depends_on": [1]}},
     {{"id": 3, "task": "拒绝赵丽颖的退款", "agent": "tool", "tool_name": "refund_reject", "description": "调用退款拒绝工具", "depends_on": [1]}}
 ]
 
-示例3（混合任务）：
-任务："查询本月业绩，然后批准黄晓明的退款"
-拆分结果：
+### 示例2：发放优惠券
+任务："给所有顾客发满100减15优惠券"
 [
-    {{"id": 1, "task": "查询本月业绩数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月的营业额和订单数", "depends_on": []}},
-    {{"id": 2, "task": "批准黄晓明的退款", "agent": "tool", "tool_name": "refund_approve", "description": "调用退款批准工具", "depends_on": [1]}}
+    {{"id": 1, "task": "查询满100减15优惠券的ID", "agent": "nl2sql", "tool_name": "", "description": "获取优惠券ID", "depends_on": []}},
+    {{"id": 2, "task": "查询所有顾客ID", "agent": "nl2sql", "tool_name": "", "description": "获取顾客ID列表", "depends_on": []}},
+    {{"id": 3, "task": "发放优惠券给所有顾客", "agent": "tool", "tool_name": "grant_coupon", "description": "调用发放优惠券工具", "depends_on": [1, 2]}}
+]
+
+### 示例3：核销入座
+任务："帮张三核销"
+[
+    {{"id": 1, "task": "查询张三的进行中场次信息", "agent": "nl2sql", "tool_name": "", "description": "获取customer_id和customer_session_id", "depends_on": []}},
+    {{"id": 2, "task": "核销张三入座", "agent": "tool", "tool_name": "game_session_checkin", "description": "调用核销入座工具", "depends_on": [1]}}
+]
+
+### 示例4：结束游玩
+任务："结束张三的游玩"
+[
+    {{"id": 1, "task": "查询张三的进行中场次ID", "agent": "nl2sql", "tool_name": "", "description": "获取game_session_id", "depends_on": []}},
+    {{"id": 2, "task": "结束张三的游玩", "agent": "tool", "tool_name": "game_session_finish", "description": "调用结束游玩工具", "depends_on": [1]}}
+]
+
+### 示例5：物料入库
+任务："入库100个石膏娃娃"
+[
+    {{"id": 1, "task": "查询石膏娃娃的物料ID", "agent": "nl2sql", "tool_name": "", "description": "获取material_id", "depends_on": []}},
+    {{"id": 2, "task": "入库100个石膏娃娃", "agent": "tool", "tool_name": "material_inbound", "description": "调用物料入库工具", "depends_on": [1]}}
+]
+
+### 示例6：物料出库
+任务："出库50个颜料"
+[
+    {{"id": 1, "task": "查询颜料的物料ID", "agent": "nl2sql", "tool_name": "", "description": "获取material_id", "depends_on": []}},
+    {{"id": 2, "task": "出库50个颜料", "agent": "tool", "tool_name": "material_outbound", "description": "调用物料出库工具", "depends_on": [1]}}
+]
+
+### 示例7：回复评价
+任务："回复张三的评价"
+[
+    {{"id": 1, "task": "查询张三的待回复评价", "agent": "nl2sql", "tool_name": "", "description": "获取feedback_id", "depends_on": []}},
+    {{"id": 2, "task": "回复张三的评价", "agent": "tool", "tool_name": "reply_feedback", "description": "调用回复评价工具", "depends_on": [1]}}
+]
+
+### 示例8：发送通知
+任务："给所有顾客发通知说明天放假"
+[
+    {{"id": 1, "task": "查询所有顾客ID", "agent": "nl2sql", "tool_name": "", "description": "获取顾客ID列表", "depends_on": []}},
+    {{"id": 2, "task": "发送放假通知给所有顾客", "agent": "tool", "tool_name": "send_notification", "description": "调用发送通知工具", "depends_on": [1]}}
+]
+
+### 示例9：混合任务（查询+操作）
+任务："查询本月营业额，然后批准黄晓明的退款"
+[
+    {{"id": 1, "task": "查询本月营业额数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月的营业额", "depends_on": []}},
+    {{"id": 2, "task": "查询黄晓明的待处理退款ID", "agent": "nl2sql", "tool_name": "", "description": "获取退款记录ID", "depends_on": []}},
+    {{"id": 3, "task": "批准黄晓明的退款", "agent": "tool", "tool_name": "refund_approve", "description": "调用退款批准工具", "depends_on": [2]}}
+]
+
+### 示例10：经营分析
+任务："分析本月经营情况"
+[
+    {{"id": 1, "task": "查询本月营收数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月营业额、订单数、热销套餐", "depends_on": []}},
+    {{"id": 2, "task": "查询本月顾客数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月新顾客数、活跃顾客数", "depends_on": []}},
+    {{"id": 3, "task": "查询本月支出数据", "agent": "nl2sql", "tool_name": "", "description": "查询本月各类支出", "depends_on": []}},
+    {{"id": 4, "task": "汇总分析并给出建议", "agent": "llm", "tool_name": "", "description": "基于以上数据进行分析并给出建议", "depends_on": [1, 2, 3]}}
 ]
 
 请返回 JSON 格式的数组：
