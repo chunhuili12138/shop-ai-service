@@ -1067,8 +1067,17 @@ class TaskRouter:
         # 3b. 上下文相关问题（根据 is_operation 和 need_requery 决定路由）
         if check_result.get("is_context_question"):
             if check_result.get("need_requery"):
-                # 需要重新查询数据（如"再次确认金额统计是否正确"），继续路由到 COMPLEXITY_PROMPT
-                print(f"[Router] 上下文问题需要重新查询数据，继续路由")
+                # 需要重新查询数据，直接路由到 nl2sql
+                print(f"[Router] 上下文问题需要重新查询数据，直接路由到 nl2sql")
+                return {
+                    "mode": "single",
+                    "agent": AgentType.NL2SQL,
+                    "reasoning": check_result.get("reason", "用户需要重新查询数据"),
+                    "understanding": task,
+                    "analysis": "用户需要重新查询数据来验证或确认",
+                    "plan": [{"step": 1, "action": task, "tool": "nl2sql", "is_critical": True}],
+                    "complexity": "simple"
+                }
             elif not check_result.get("is_operation"):
                 # 纯文本上下文问题（如"处理中不就是待处理嘛"），直接返回 LLM Agent
                 return {
@@ -1080,7 +1089,7 @@ class TaskRouter:
                     "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
                     "complexity": "simple"
                 }
-            # 操作类上下文问题 或 需要重新查询，继续路由到 COMPLEXITY_PROMPT
+            # 操作类上下文问题，继续路由到 COMPLEXITY_PROMPT
         
         # 3c. 需要追问
         if check_result.get("need_clarify"):

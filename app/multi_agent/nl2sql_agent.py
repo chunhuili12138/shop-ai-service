@@ -448,6 +448,38 @@ class NL2SQLAgent:
             elif result is not None:
                 candidates.append(result)
         
+        # 如果所有候选都为空，用更简单的 prompt 重试一次
+        if not candidates:
+            print(f"[NL2SQLAgent] 所有候选为空，用简化 prompt 重试")
+            try:
+                simple_prompt = f"""根据以下问题生成一个 MySQL SELECT 查询语句。
+
+问题：{enhanced_task}
+
+数据库表结构：
+{schema}
+
+要求：
+1. 只返回 SQL 语句，不要其他文字
+2. 必须以 SELECT 开头
+3. 使用 shop_id = :shop_id 过滤店铺数据
+4. 使用 is_deleted = 0 过滤已删除数据"""
+                
+                response = await llm.ainvoke([HumanMessage(content=simple_prompt)])
+                raw_content = response.content.strip()
+                sql = sanitize_sql(raw_content)
+                
+                print(f"[NL2SQLAgent] 重试 LLM 返回: {raw_content}")
+                print(f"[NL2SQLAgent] 重试清理后: {sql}")
+                
+                if sql.upper().startswith("SELECT"):
+                    candidates.append(sql)
+                    print(f"[NL2SQLAgent] 重试成功")
+                else:
+                    print(f"[NL2SQLAgent] 重试失败（不是 SELECT 语句）")
+            except Exception as e:
+                print(f"[NL2SQLAgent] 重试异常: {str(e)}")
+        
         return candidates
     
     async def _select_best_sql(self, candidates: List[str], task: str, 
