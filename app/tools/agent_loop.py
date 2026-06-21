@@ -261,17 +261,33 @@ class AgentLoop:
     def _default_system_prompt(self) -> str:
         """默认系统提示词"""
         tools_desc = self._get_tools_description()
+        backend_nav = self._get_backend_navigation()
         return f"""你是店铺智能助手，负责帮助店长查询和分析店铺数据。
 
 ## 可用工具
 {tools_desc}
 
-## 工作原则
-1. 根据用户问题，选择合适的工具查询数据
-2. 如果需要多个维度的数据，可以同时调用多个工具
-3. 基于工具返回的结果，生成清晰、友好的回答
-4. 如果工具调用失败，诚实告知用户"查询失败"或"未查到数据"
-5. 所有数据查询都需要指定 shop_id
+## 执行规则（必须遵守）
+
+### 优先级 1：直接执行
+如果有对应的工具，直接执行：
+- 查询类 → 使用 execute_sql_query 或其他查询工具
+- 操作类 → 调用对应的操作工具（refund_approve、grant_coupon 等）
+- 知识类 → 基于已有知识回答
+
+### 优先级 2：引导后台
+如果没有对应的工具，引导用户到后台系统操作：
+- 说明原因：「智能助手暂不支持XX操作」
+- 给出路径：「您可以到【XX页面】（路径：/xx/xx）操作」
+- 说明功能：「在该页面可以XX、XX、XX」
+
+### 判断方法
+1. 用户请求 → 检查工具列表 → 有则执行，无则引导
+2. 不要猜测，不要编造能力
+3. 不要说"您可以到后台操作"然后又说"我来帮您查询"——要么执行，要么引导
+
+## 后台系统导航
+{backend_nav}
 
 ## 数据调查能力
 当你遇到不确定的信息时，主动查询数据库：
@@ -316,6 +332,27 @@ class AgentLoop:
                     pass
             descriptions.append(desc)
         return "\n".join(descriptions)
+    
+    def _get_backend_navigation(self) -> str:
+        """生成后台系统导航信息"""
+        import json
+        import os
+        
+        try:
+            cap_file = os.path.join(os.path.dirname(__file__), '..', '..', 'data', 'system_capabilities.json')
+            with open(cap_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            
+            pages = data.get('pages', [])
+            lines = []
+            for page in pages:
+                features = ", ".join([f["name"] for f in page.get("features", [])])
+                lines.append(f"- **{page['name']}**（{page['path']}）: {page['description']} | 功能: {features}")
+            
+            return "\n".join(lines)
+        except Exception as e:
+            logger.warning(f"加载系统能力文档失败: {e}")
+            return "（系统能力文档加载失败）"
     
     def _build_graph(self) -> StateGraph:
         """
