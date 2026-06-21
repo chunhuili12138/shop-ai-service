@@ -967,16 +967,29 @@ class TaskRouter:
 - 纠正/确认/解释类："处理中不就是待处理嘛"、"你说的对"、"为什么"
 - 建议/分析类："怎么提高营业额"（如果不需要查数据）
 
+### 5. 是否需要重新查询数据？
+
+需要重新查询的情况：
+- 用户要求验证/确认之前的数据："再次确认金额统计是否正确"、"帮我再查一下"、"重新查一下"
+- 用户质疑数据准确性："这个数据对吗"、"帮我核实一下"、"确认一下数据"
+- 用户要求更新数据："重新查一下今天的营业额"
+
+不需要重新查询的情况：
+- 用户只是纠正/确认文本："处理中不就是待处理嘛"
+- 用户只是追问上下文："那林志玲的呢"
+- 用户只是确认操作结果："好的，我知道了"
+
 ## 路由决策优先级（供参考）
 1. is_valid=false → 无效输入，返回提示
-2. is_context_question=true AND is_operation=false → 纯文本上下文问题，交给 LLM 基于历史回答
-3. is_context_question=true AND is_operation=true → 操作类上下文问题，继续路由到工具
-4. need_clarify=true → 需要追问，返回追问提示
-5. 以上都不是 → 继续路由判断
+2. is_context_question=true AND need_requery=true → 需要重新查询数据，继续路由到工具
+3. is_context_question=true AND is_operation=false AND need_requery=false → 纯文本上下文问题，交给 LLM 基于历史回答
+4. is_context_question=true AND is_operation=true → 操作类上下文问题，继续路由到工具
+5. need_clarify=true → 需要追问，返回追问提示
+6. 以上都不是 → 继续路由判断
 
 ## 输出格式
 返回 JSON：
-{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": true/false, "is_operation": true/false, "reason": "判断原因（简短说明，如'明确的操作指令'、'引用之前的退款查询'）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写，如'哪个顾客的退款'）"}}"""
+{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": false, "is_operation": true/false, "need_requery": true/false, "reason": "判断原因（简短说明）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写）"}}"""
             
             from langchain_core.messages import HumanMessage
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
@@ -990,16 +1003,17 @@ class TaskRouter:
                 result.setdefault("is_context_question", False)
                 result.setdefault("need_clarify", False)
                 result.setdefault("is_operation", False)
+                result.setdefault("need_requery", False)
                 result.setdefault("reason", "")
                 result.setdefault("missing_info", "")
                 result["quick_questions"] = default_quick_questions
                 return result
             
             # 解析失败，默认有效
-            return {"is_valid": True, "is_context_question": False, "need_clarify": False, "is_operation": False, "reason": "判断失败", "missing_info": "", "quick_questions": default_quick_questions}
+            return {"is_valid": True, "is_context_question": False, "need_clarify": False, "is_operation": False, "need_requery": False, "reason": "判断失败", "missing_info": "", "quick_questions": default_quick_questions}
         except Exception as e:
             print(f"[Router] 问题检查失败: {str(e)}")
-            return {"is_valid": True, "is_context_question": False, "need_clarify": False, "is_operation": False, "reason": "判断异常", "missing_info": "", "quick_questions": default_quick_questions}
+            return {"is_valid": True, "is_context_question": False, "need_clarify": False, "is_operation": False, "need_requery": False, "reason": "判断异常", "missing_info": "", "quick_questions": default_quick_questions}
     
     async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
         """
@@ -1042,7 +1056,7 @@ class TaskRouter:
                     break
         
         check_result = await self._check_question(task, shop_name, history_context)
-        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, reason={check_result.get('reason')}")
+        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, requery={check_result.get('need_requery')}, reason={check_result.get('reason')}")
         
         # 3a. 无效输入
         if not check_result.get("is_valid"):
@@ -1058,9 +1072,12 @@ class TaskRouter:
                 "quick_questions": check_result.get("quick_questions", [])
             }
         
-        # 3b. 上下文相关问题（根据 is_operation 决定路由）
+        # 3b. 上下文相关问题（根据 is_operation 和 need_requery 决定路由）
         if check_result.get("is_context_question"):
-            if not check_result.get("is_operation"):
+            if check_result.get("need_requery"):
+                # 需要重新查询数据（如"再次确认金额统计是否正确"），继续路由到 COMPLEXITY_PROMPT
+                print(f"[Router] 上下文问题需要重新查询数据，继续路由")
+            elif not check_result.get("is_operation"):
                 # 纯文本上下文问题（如"处理中不就是待处理嘛"），直接返回 LLM Agent
                 return {
                     "mode": "single",
@@ -1071,7 +1088,7 @@ class TaskRouter:
                     "plan": [{"step": 1, "action": "基于上下文回答", "tool": "llm", "is_critical": True}],
                     "complexity": "simple"
                 }
-            # 操作类上下文问题，继续路由到 COMPLEXITY_PROMPT
+            # 操作类上下文问题 或 需要重新查询，继续路由到 COMPLEXITY_PROMPT
         
         # 3c. 需要追问
         if check_result.get("need_clarify"):
