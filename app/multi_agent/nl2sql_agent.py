@@ -65,6 +65,15 @@ MySQL 8.0
    - "待审核退款" → WHERE rr.status = 1
    - "已拒绝退款" → WHERE rr.status = 3
 
+## 探索规则（重要）
+1. 如果不确定某个字段的值映射，查询 sys_dicts 表：
+   `SELECT dict_label, dict_value FROM sys_dicts WHERE dict_code = 'xxx'`
+2. 如果不确定表结构，查询 INFORMATION_SCHEMA：
+   `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_NAME = 'xxx'`
+3. 如果不确定数据在哪个表，查询所有表：
+   `SELECT TABLE_NAME, TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE()`
+4. 生成的 SQL 必须包含人类可读的标签（使用 CASE WHEN）
+
 ## 输出规范（必须遵守）
 1. **所有输出必须是人类可读的**，不能使用原始代码或数字指代
 2. 状态字段必须映射为中文标签：

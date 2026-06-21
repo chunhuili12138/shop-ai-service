@@ -93,6 +93,103 @@ def execute_sql_query(sql: str, params: str = "{}") -> str:
         return f"查询失败: {str(e)}"
 
 
+@tool
+def list_tables(keyword: str = "") -> str:
+    """
+    列出数据库表，帮助理解数据结构。
+    
+    用途：
+    - 不确定数据存在哪个表时使用
+    - 需要了解系统有哪些数据时使用
+    
+    参数：
+    - keyword: 可选，按关键字过滤表名（如"refund"、"customer"）
+    """
+    from app.nl2sql.schema import get_schema_info
+    
+    try:
+        schema = get_schema_info()
+        tables = []
+        for table_name, table_info in schema.items():
+            if keyword and keyword.lower() not in table_name.lower():
+                continue
+            desc = table_info.get("comment", "") or table_name
+            tables.append(f"- {table_name}: {desc}")
+        
+        if not tables:
+            return f"没有找到包含 '{keyword}' 的表"
+        
+        return "数据库表列表：\n" + "\n".join(tables[:50])
+    except Exception as e:
+        return f"获取表列表失败: {str(e)}"
+
+
+@tool
+def describe_table(table_name: str) -> str:
+    """
+    描述表结构，包括字段名、类型、说明。
+    
+    用途：
+    - 不确定某个字段的含义时使用
+    - 需要了解表有哪些字段时使用
+    
+    参数：
+    - table_name: 表名（如"refund_records"、"customers"）
+    """
+    from app.nl2sql.schema import get_schema_info
+    
+    try:
+        schema = get_schema_info()
+        table_info = schema.get(table_name)
+        
+        if not table_info:
+            return f"表 '{table_name}' 不存在"
+        
+        columns = table_info.get("columns", [])
+        if not columns:
+            return f"表 '{table_name}' 没有列信息"
+        
+        lines = [f"表 {table_name} 的结构："]
+        for col in columns:
+            name = col.get("name", "")
+            col_type = col.get("type", "")
+            comment = col.get("comment", "") or ""
+            lines.append(f"- {name} ({col_type}): {comment}")
+        
+        return "\n".join(lines)
+    except Exception as e:
+        return f"获取表结构失败: {str(e)}"
+
+
+@tool
+def search_docs(query: str) -> str:
+    """
+    搜索知识库文档，查找相关信息。
+    
+    用途：
+    - 需要查找业务规则、政策、流程时使用
+    - 不确定某个概念的定义时使用
+    
+    参数：
+    - query: 搜索关键词（如"退款政策"、"营业时间"）
+    """
+    try:
+        from app.rag.agentic_rag import AgenticRAG
+        from app.common.user_context import UserContext
+        
+        rag = AgenticRAG()
+        # 使用空的 UserContext 进行搜索
+        ctx = UserContext(shop_id=0, user_id=0, role="guest")
+        result = rag.execute(query, ctx)
+        
+        if result and result.get("success"):
+            return result.get("result", "未找到相关信息")
+        else:
+            return "未找到相关信息"
+    except Exception as e:
+        return f"搜索失败: {str(e)}"
+
+
 # ==================== 状态定义 ====================
 
 class AgentLoopState(TypedDict):
@@ -289,13 +386,26 @@ class AgentLoop:
 ## 后台系统导航
 {backend_nav}
 
-## 数据调查能力
-当你遇到不确定的信息时，主动查询数据库：
-- 看到 status=1 不知道什么意思 → 查询 sys_dicts 表获取状态映射
-- 需要查找特定顾客 → 查询 customers 表
-- 需要查找特定订单 → 查询相关表
+## 数据调查能力（重要）
+当你遇到不确定的信息时，不要猜测，主动探索：
+
+### 探索工具
+- **execute_sql_query**: 执行 SQL 查询，获取数据
+- **list_tables**: 列出数据库表，了解系统有哪些数据
+- **describe_table**: 查看表结构，了解字段含义
+- **search_docs**: 搜索知识库，查找业务规则
+
+### 探索策略
+1. 遇到状态码（如 status=1）→ 查询 sys_dicts 表获取映射
+2. 不确定表结构 → 使用 describe_table 查看
+3. 不确定数据在哪个表 → 使用 list_tables 查找
+4. 需要业务规则 → 使用 search_docs 搜索知识库
+
+### 探索原则
 - 不要猜测，要查询验证
-- 你可以多次调用工具来获取完整信息
+- 可以多次调用工具来获取完整信息
+- 不要在第一次查询失败时就放弃，尝试不同的查询方式
+- 如果找不到答案，诚实告知用户
 
 ## 输出规范（必须遵守）
 1. **所有输出必须是人类可读的**，不能使用原始代码或数字指代
