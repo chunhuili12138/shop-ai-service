@@ -65,6 +65,22 @@ MySQL 8.0
    - "待审核退款" → WHERE rr.status = 1
    - "已拒绝退款" → WHERE rr.status = 3
 
+## 输出规范（必须遵守）
+1. **所有输出必须是人类可读的**，不能使用原始代码或数字指代
+2. 状态字段必须映射为中文标签：
+   - 退款状态(status)：`CASE WHEN 1 THEN '处理中' WHEN 2 THEN '已完成' WHEN 3 THEN '已拒绝' END`
+   - 套餐类型(type)：`CASE WHEN 1 THEN '单次' WHEN 2 THEN '周卡' WHEN 3 THEN '月卡' END`
+   - 优惠券类型(type)：`CASE WHEN 1 THEN '固定金额' WHEN 2 THEN '百分比' WHEN 3 THEN '兑换券' END`
+   - 支付方式(payment_method)：`CASE WHEN 'wechat' THEN '微信' WHEN 'alipay' THEN '支付宝' WHEN 'cash' THEN '现金' END`
+3. 如果不确定某个字段的映射，查询 sys_dicts 表获取：
+   `SELECT dict_label, dict_value FROM sys_dicts WHERE dict_code = 'xxx'`
+4. 列名使用中文别名：
+   - status → 状态
+   - refund_amount → 退款金额
+   - nickname → 顾客姓名
+   - created_at → 创建时间
+5. 金额字段使用 FORMAT 函数格式化：`FORMAT(amount, 2)`
+
 请直接返回 SQL 语句："""
 
 

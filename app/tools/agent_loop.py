@@ -36,6 +36,63 @@ from app.tools.prompt_templates import get_system_prompt
 logger = logging.getLogger(__name__)
 
 
+# ==================== 通用 SQL 执行工具 ====================
+
+from langchain_core.tools import tool
+
+@tool
+def execute_sql_query(sql: str, params: str = "{}") -> str:
+    """
+    执行 SQL 查询并返回结果。
+    
+    用途：
+    - 查询任意表的数据（如字典表、业务表）
+    - 查询字典表获取状态映射（如 status=1 是什么意思）
+    - 统计分析
+    
+    参数：
+    - sql: SELECT 查询语句
+    - params: JSON 格式的参数（可选，如 {"shop_id": 5}）
+    
+    注意：
+    - 只允许 SELECT 语句
+    - 结果限制 100 行
+    - 可以查询 sys_dicts 表获取状态映射
+    """
+    import json as _json
+    from app.nl2sql.executor import execute_sql
+    
+    # 安全校验
+    if not sql.strip().upper().startswith("SELECT"):
+        return "错误：只允许 SELECT 查询"
+    
+    # 解析参数
+    try:
+        params_dict = _json.loads(params) if params and params.strip() else {}
+    except _json.JSONDecodeError:
+        params_dict = {}
+    
+    # 执行查询
+    try:
+        results = execute_sql(sql, params_dict)
+        if not results:
+            return "查询结果为空"
+        
+        # 格式化结果
+        if isinstance(results, list) and len(results) > 0:
+            # 提取列名
+            columns = list(results[0].keys())
+            lines = [" | ".join(columns)]
+            lines.append(" | ".join(["---"] * len(columns)))
+            for row in results[:100]:  # 限制 100 行
+                lines.append(" | ".join([str(row.get(col, "")) for col in columns]))
+            return "\n".join(lines)
+        else:
+            return str(results)
+    except Exception as e:
+        return f"查询失败: {str(e)}"
+
+
 # ==================== 状态定义 ====================
 
 class AgentLoopState(TypedDict):
@@ -150,6 +207,10 @@ class AgentLoop:
         else:
             self.tools = TOOLS
         
+        # 确保 execute_sql_query 工具在列表中
+        if execute_sql_query not in self.tools:
+            self.tools = list(self.tools) + [execute_sql_query]
+        
         # 生成系统提示词
         if user_context:
             self.system_prompt = get_system_prompt(user_context)
@@ -211,6 +272,23 @@ class AgentLoop:
 3. 基于工具返回的结果，生成清晰、友好的回答
 4. 如果工具调用失败，诚实告知用户"查询失败"或"未查到数据"
 5. 所有数据查询都需要指定 shop_id
+
+## 数据调查能力
+当你遇到不确定的信息时，主动查询数据库：
+- 看到 status=1 不知道什么意思 → 查询 sys_dicts 表获取状态映射
+- 需要查找特定顾客 → 查询 customers 表
+- 需要查找特定订单 → 查询相关表
+- 不要猜测，要查询验证
+- 你可以多次调用工具来获取完整信息
+
+## 输出规范（必须遵守）
+1. **所有输出必须是人类可读的**，不能使用原始代码或数字指代
+2. 状态字段必须映射为中文标签：
+   - 退款状态：1=处理中, 2=已完成, 3=已拒绝
+   - 套餐类型：1=单次, 2=周卡, 3=月卡
+   - 优惠券类型：1=固定金额, 2=百分比, 3=兑换券
+3. 如果数据中包含原始状态码，必须在回答中转换为中文
+4. 列名使用中文：status→状态, amount→金额, nickname→顾客姓名
 
 ## 回答要求
 - 使用中文回答
