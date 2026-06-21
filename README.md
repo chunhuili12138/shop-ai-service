@@ -30,11 +30,11 @@ shop-ai-service/
 │   │   ├── user_context.py      # 用户上下文
 │   │   └── system_prompts.py    # 系统提示词（角色/安全/合规）
 │   ├── multi_agent/             # 多 Agent 模块
-│   │   ├── router.py            # 智能路由（LLM 判断 + Skills + 综合问题检查）
+│   │   ├── router.py            # 智能路由（_check_question + COMPLEXITY_PROMPT）
 │   │   ├── supervisor.py        # Supervisor 调度器（支持批量确认）
 │   │   ├── protocol.py          # 协议定义（SubTask 增加 tool_name）
 │   │   ├── rag_agent.py         # RAG 知识问答
-│   │   ├── nl2sql_agent.py      # NL2SQL 数据查询
+│   │   ├── nl2sql_agent.py      # NL2SQL 数据查询（并行候选 + 输出规范）
 │   │   ├── tool_agent.py        # 工具调用
 │   │   └── llm_agent.py         # LLM 总结分析
 │   ├── rag/                     # RAG 模块
@@ -46,7 +46,7 @@ shop-ai-service/
 │   │   └── executor.py          # SQL 执行器（事务支持）
 │   ├── tools/                   # 工具模块
 │   │   ├── __init__.py          # 工具注册（TOOL_MAP + TOOL_DISPLAY_NAMES）
-│   │   ├── agent_loop.py        # Agent 循环（带超时保护）
+│   │   ├── agent_loop.py        # Agent 循环（ReAct + 探索工具 + 后台导航）
 │   │   ├── param_plans.py       # 参数解析计划（查询工具参数配置）
 │   │   ├── tool_requirements.py # 操作工具参数需求（Agent Loop 使用）
 │   │   ├── coupon.py            # 优惠券工具（调用 Java API）
@@ -60,6 +60,8 @@ shop-ai-service/
 │   │   └── package_client.py    # 套餐客户端（异步）
 │   ├── config.py                # 配置管理
 │   └── main.py                  # 应用入口（结构化日志）
+├── data/                        # 数据文件
+│   └── system_capabilities.json # 后台系统页面能力文档
 ├── monitoring/                  # 监控模块
 │   └── langfuse_config.py       # LangFuse 配置（兼容同步/异步）
 ├── tests/                       # 单元测试（44 个用例）
@@ -81,31 +83,34 @@ shop-ai-service/
     ↓
 【综合检查】_check_question（一次 LLM 调用）
     ├── 无效输入 → 返回提示
-    ├── 上下文问题 → LLM Agent 基于历史回答
     ├── 需要追问 → 返回追问提示
+    ├── 纯文本上下文 → LLM Agent 基于历史回答
+    ├── 确认性回复 → 根据助手上一个问题判断
     └── 有效 → 继续路由
     ↓
 【Router 分析】COMPLEXITY_PROMPT → mode/agent/plan
-    ├── single + tool → 工具调用
-    ├── single + nl2sql → 数据查询
+    ├── single + nl2sql → 数据查询（统一使用 nl2sql）
+    ├── single + tool → 操作工具调用
     ├── single + rag → 知识问答
+    ├── single + llm → 分析总结
     └── multi → 多任务拆分
 ```
 
-### 2. 操作工具执行流程（Agent Loop）
+### 2. Agent Loop（ReAct 循环）
 
 ```
-Router → tool: grant_coupon
-    ↓
-【Agent Loop】_execute_with_agent_loop
-    ├── LLM 提取参数（从 TOOL_REQUIREMENTS）
-    ├── 查询上下文（query_context）
-    ├── NL2SQL 解析名称→ID
-    └── 调用工具 → 返回 confirm 弹窗
-    ↓
-【用户确认】POST /api/chat/confirm
-    ↓
-【执行】调用 Java 后端 API
+用户问题 → LLM 决策 → 调用工具 → 观察结果 → 继续决策 → 最终回答
+                ↑                              ↓
+                └──────── 循环（最多 5 轮）──────┘
+
+可用工具：
+- execute_sql_query: 通用 SQL 查询
+- list_tables: 列出数据库表
+- describe_table: 查看表结构
+- search_docs: 搜索知识库
+- query_refunds: 查询退款记录
+- refund_approve: 批准退款
+- ... 其他操作工具
 ```
 
 ### 3. 多任务批量确认流程
@@ -116,7 +121,7 @@ Router → tool: grant_coupon
 【Router】mode=multi
     ↓
 【Supervisor】拆分子任务
-    ├── 子任务1: NL2SQL 查询退款信息
+    ├── 子任务1: NL2SQL 查询退款信息 [nl2sql]
     ├── 子任务2: refund_approve(林志玲) [tool_name=refund_approve]
     └── 子任务3: refund_reject(黄晓明) [tool_name=refund_reject]
     ↓
@@ -220,11 +225,13 @@ Content-Type: application/json
 | `thinking` | 意图分析 |
 | `plan` | 执行计划 |
 | `processing` | 执行步骤 |
-| `answer` | 最终答案 |
+| `answer` | 最终答案（流式输出） |
 | `confirm` | 单个确认弹窗 |
 | `batch_confirm` | 批量确认弹窗 |
 | `select` | 选择弹窗 |
 | `quick_questions` | 快速问题建议 |
+| `warning` | 评审警告 |
+| `success` | 操作成功 |
 | `done` | 完成 |
 | `error` | 错误 |
 
@@ -268,16 +275,25 @@ Authorization: Bearer-{shopId}-{token}
 
 ## 工具体系
 
+### 探索工具（Agent Loop）
+
+| 工具 | 说明 |
+|------|------|
+| `execute_sql_query` | 通用 SQL 查询（只允许 SELECT） |
+| `list_tables` | 列出数据库表（按关键字过滤） |
+| `describe_table` | 查看表结构（字段名、类型、说明） |
+| `search_docs` | 搜索知识库文档 |
+
 ### 查询工具（query_*）
 
-| 工具 | 说明 | 支持的筛选条件 |
-|------|------|---------------|
-| `query_coupons` | 查询优惠券 | status |
-| `query_customer` | 查询顾客 | keyword（姓名/手机号） |
-| `query_refunds` | 查询退款 | status, customer_name |
-| `query_feedbacks` | 查询评价 | status, customer_name |
-| `query_inventory` | 查询库存 | keyword（物料名） |
-| `query_game_sessions` | 查询场次 | status, customer_name |
+| 工具 | 说明 |
+|------|------|
+| `query_coupons` | 查询优惠券 |
+| `query_customer` | 查询顾客 |
+| `query_refunds` | 查询退款记录 |
+| `query_feedbacks` | 查询评价 |
+| `query_inventory` | 查询库存 |
+| `query_game_sessions` | 查询场次 |
 
 ### 操作工具（调用 Java 后端 API）
 
@@ -292,6 +308,25 @@ Authorization: Bearer-{shopId}-{token}
 | `material_outbound` | POST /api/inventoryOutbound | 物料出库 |
 | `reply_feedback` | PUT /api/feedbacks/reply | 回复评价 |
 | `send_notification` | POST /api/notificationsSend | 发送通知 |
+
+---
+
+## 后台系统导航
+
+当智能助手无法直接解决问题时，引导用户到后台系统操作：
+
+| 页面 | 路径 | 功能 |
+|------|------|------|
+| 退款管理 | /trade/refund | 批准/拒绝退款、查看退款记录 |
+| 顾客管理 | /customer | 查看顾客信息、管理顾客 |
+| 库存管理 | /inventory | 查看库存、入库/出库 |
+| 优惠券管理 | /marketing/coupon | 创建/发放优惠券 |
+| 员工管理 | /system/staff | 管理员工账号 |
+| 角色管理 | /system/role | 管理角色和权限 |
+| 字典管理 | /system/dict | 管理系统字典 |
+| 套餐管理 | /package | 管理服务套餐 |
+| 评价管理 | /feedback | 查看/回复评价 |
+| 排班管理 | /finance/schedule | 管理员工排班 |
 
 ---
 
@@ -345,73 +380,71 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ## 更新日志
 
-### v0.5.0 (2026-06-20)
+### v0.6.0 (2026-06-21)
+
+**LLM 自主探索能力**
+- 新增探索工具：`list_tables`、`describe_table`、`search_docs`
+- LLM 可以主动查询数据库结构和知识库
+- 遇到不确定信息时主动探索，而非猜测
+
+**后台系统导航**
+- 新增 `data/system_capabilities.json` 记录所有后台页面功能
+- Agent Loop 系统提示词增加执行规则和后台导航
+- 无法解决时引导用户到对应页面操作
+
+**NL2SQL 输出规范**
+- 状态字段必须映射为中文标签（CASE WHEN）
+- 列名使用中文别名
+- 金额字段使用 FORMAT 格式化
 
 **Router 优化**
 - 合并三个检查方法为 `_check_question`（一次 LLM 调用）
-- 查询工具能力表，LLM 知道何时用 tool/nl2sql
-- JSON 解析失败重试机制（最多 2 次）
-- 智能 fallback（操作类→TOOL，其他→RAG）
+- 新增 `need_requery` 判断（用户需要查询数据）
+- 新增确认性回复规则（"是的"等确认语句）
+- 统一数据查询路由（所有查询走 nl2sql）
+
+**批量确认优化**
+- SubTask 增加 tool_name 字段
+- Supervisor 支持操作型子任务的确认流程
+- 新增 POST /api/chat/batch_confirm 端点
+- 前端 BatchConfirmCard 组件
+
+**流式输出优化**
+- NL2SQL 并行生成候选 SQL（3 个候选并行，节省 30 秒）
+- Session 保存 LLM 格式化后的内容（非原始 SQL 输出）
+
+**操作工具统一**
+- 所有 9 个操作工具改为调用 Java 后端 API
+- 新增 backend_client.py 封装 Java API 调用
+
+### v0.5.0 (2026-06-20)
 
 **Agent Loop**
 - LLM 自主规划参数获取（TOOL_REQUIREMENTS 驱动）
 - 支持 extract 模式（first/all_concat/value）
 - 支持排除逻辑（exclude_ids/exclude_names）
-- 支持多值查询（如"张三和李四"）
 - 参数类型自动转换
 
-**多任务批量确认**
-- SubTask 增加 tool_name 字段
-- Supervisor 支持操作型子任务的确认流程
-- 新增 POST /api/chat/batch_confirm 端点
-- 前端 BatchConfirmCard 组件（checkbox + 输入框）
-
-**操作工具统一**
-- 所有 9 个操作工具改为调用 Java 后端 API
-- 新增 backend_client.py 封装 Java API 调用
-- 修复 token/operator_id 注入问题
-
-**其他改进**
-- `_check_question_validity` 和 `_check_need_clarification` 增加上下文传递
-- Agent Loop 不校验 required 参数（由工具 confirm 弹窗处理）
-- Supervisor 任务在 SSE 断开后自动取消
+**Router 优化**
+- 查询工具能力表，LLM 知道何时用 tool/nl2sql
+- JSON 解析失败重试机制（最多 2 次）
+- 智能 fallback（操作类→TOOL，其他→RAG）
 
 ### v0.4.0 (2026-06-13)
 
 **安全修复**
 - 移除 GET /stream 端点，统一 POST + Authorization Header
-- Token 缓存改用 TTLCache(maxsize=10000) 防止内存泄漏
-- SSL 验证按环境控制，生产环境启用
+- Token 缓存改用 TTLCache(maxsize=10000)
+- SSL 验证按环境控制
 - confirm 操作添加角色权限二次校验
 
 **稳定性修复**
-- HITL 改用 Redis 持久化，interrupt_id 改用 UUID
+- HITL 改用 Redis 持久化
 - 库存操作添加事务包裹
-- 工具执行添加 asyncio.wait_for 超时保护
-- 套餐客户端改为异步调用
-
-**配置改进**
-- 审批阈值从 settings 读取，不再硬编码
-- 移除所有硬编码 shop_id=5
-- NL2SQL_DANGLED_KEYWORDS → NL2SQL_DANGEROUS_KEYWORDS
-
-**日志改造**
-- 结构化日志（logging 模块）
-- 第三方库日志静默（WARNING 级别）
-- 流式处理全流程日志（请求/路由/步骤/耗时/SSE 事件）
-
-**监控改进**
-- LangFuse trace_function 兼容同步和异步函数
+- 工具执行添加超时保护
 
 **测试**
 - 新增 44 个单元测试（auth/hitl/safety）
-
-### v2.1 (2026-06-13)
-- 任务计划执行机制
-- Skills 预设任务机制
-- 经验池系统
-- LLM Agent
-- 历史上下文支持
 
 ### v1.0 (2026-06-01)
 - 初始版本
