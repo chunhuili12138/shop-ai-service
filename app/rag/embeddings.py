@@ -18,6 +18,7 @@ def get_embeddings() -> Embeddings:
         "openai_api_key": settings.EMBEDDING_API_KEY or "ollama",
         "openai_api_base": settings.EMBEDDING_BASE_URL,
         "check_embedding_ctx_length": settings.EMBEDDING_CHECK_CTX_LENGTH,
+        "chunk_size": 10,  # 阿里百炼 text-embedding-v4 限制每批最多10条
     }
     if settings.EMBEDDING_USE_CUSTOM_DIMENSIONS:
         kwargs["dimensions"] = settings.EMBEDDING_DIMENSIONS

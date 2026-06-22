@@ -466,17 +466,12 @@ class StreamHandler:
 
                 yield self._format_sse("error", clarification, "错误")
 
-                yield self._format_sse("done", "", "完成", done=True)
-
-                
-
-                # 发送快捷问题（前端可以显示为快捷按钮）
-
+                # 发送快捷问题（在 done 之前，确保前端能收到）
                 quick_questions = route_result.get("quick_questions", [])
-
                 if quick_questions:
-
                     yield self._format_sse("quick_questions", quick_questions, "快捷问题")
+
+                yield self._format_sse("done", "", "完成", done=True)
 
             
 
@@ -849,7 +844,6 @@ class StreamHandler:
                         if self.session_id:
                             try:
                                 from app.rag.session import get_session_manager
-                                from app.tools import TOOL_DISPLAY_NAMES
                                 session_mgr = get_session_manager()
                                 ops = batch_data.get("operations", [])
                                 ops_desc_parts = []
@@ -2011,7 +2005,6 @@ Router 分析: {analysis}
 
     def _build_agent_loop_select(self, tool_name: str, param_name: str, result_text: str, params_config: dict) -> dict:
         """构建 Agent Loop 的选择弹窗（从 NL2SQL 结果中选择）"""
-        from app.tools import TOOL_DISPLAY_NAMES
         display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
 
         # 解析结果为选项
@@ -2056,7 +2049,6 @@ Router 分析: {analysis}
 
     async def _build_agent_loop_select_all(self, tool_name: str, param_name: str, params_config: dict, shop_id: int) -> dict:
         """查询所有选项并返回选择弹窗"""
-        from app.tools import TOOL_DISPLAY_NAMES
         display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
 
         # 根据参数名确定查询方式
@@ -2094,7 +2086,11 @@ Router 分析: {analysis}
             if results:
                 options = [{"value": str(r["id"]), "label": f"{r['name']} (库存: {r['quantity'] or 0} {r['unit']})"} for r in results]
             else:
-                return {"success": False, "result": "", "error": "当前没有物料"}
+                return {
+                    "success": False,
+                    "result": "",
+                    "error": "当前没有物料，请先到后台【物料管理】页面添加物料"
+                }
 
         elif param_name == "refund_id":
             # 查询所有待处理退款（通过 purchases 表关联 customers）
@@ -2138,14 +2134,19 @@ Router 分析: {analysis}
         else:
             return {"success": False, "result": "", "error": f"无法自动查询参数 {param_name}"}
 
+        # 获取参数的中文描述
+        from app.tools.tool_requirements import TOOL_REQUIREMENTS
+        tool_req = TOOL_REQUIREMENTS.get(tool_name, {})
+        param_desc = tool_req.get("params", {}).get(param_name, {}).get("description", param_name)
+
         return {
             "success": True,
             "result": "",
             "select_data": {
                 "type": "select",
                 "tool_name": tool_name,
-                "title": f"选择{param_name}",
-                "message": f"请选择{param_name}：",
+                "title": f"选择{param_desc}",
+                "message": f"请选择{param_desc}：",
                 "items": [{"id": opt["value"], "name": opt["label"]} for opt in options],
                 "fields": [],
                 "action": tool_name,
@@ -2518,7 +2519,6 @@ Router 分析: {analysis}
 
     def _build_select_response(self, tool_name: str, param_plan: dict, param_name: str, items: list) -> dict:
         """构建 select 弹窗响应（返回 select_data，前端渲染 SelectCard）"""
-        from app.tools import TOOL_DISPLAY_NAMES
         display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
         desc = param_plan['from_query'][param_name].get('description', param_name)
 
@@ -3414,7 +3414,6 @@ Router 分析: {analysis}
                 if self.session_id:
                     try:
                         from app.rag.session import get_session_manager
-                        from app.tools import TOOL_DISPLAY_NAMES
                         session_mgr = get_session_manager()
                         ops_desc_parts = []
                         for op in batch_confirms:

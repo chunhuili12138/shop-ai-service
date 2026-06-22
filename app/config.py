@@ -39,13 +39,13 @@ class Settings(BaseSettings):
     MIMO_VISION_MODEL: str = "mimo-v2.5"  # 多模态模型（支持图像/视频/音频）
     MIMO_PRO_MODEL: str = "mimo-v2.5-pro"  # 旗舰推理模型（适合复杂分析和 Agent 任务）
 
-    # ========== Embedding 配置（本地 Ollama）==========
-    EMBEDDING_API_KEY: str = "ollama"
-    EMBEDDING_BASE_URL: str = "http://localhost:11434/v1"
-    EMBEDDING_MODEL: str = "bge-m3"
+    # ========== Embedding 配置（阿里百炼 text-embedding-v4）==========
+    EMBEDDING_API_KEY: str = ""  # 阿里百炼 API Key
+    EMBEDDING_BASE_URL: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    EMBEDDING_MODEL: str = "text-embedding-v4"
     EMBEDDING_DIMENSIONS: int = 1024
-    # 云 Embedding（如 OpenAI）支持自定义维度；Ollama/bge-m3 固定维度，保持 false
-    EMBEDDING_USE_CUSTOM_DIMENSIONS: bool = False
+    # text-embedding-v4 支持自定义维度（2048/1536/1024/768/512/256/128/64）
+    EMBEDDING_USE_CUSTOM_DIMENSIONS: bool = True
     EMBEDDING_CHECK_CTX_LENGTH: bool = False
 
     # ========== 向量库配置 ==========

@@ -935,6 +935,23 @@ class TaskRouter:
 - 闲聊/问候："你好"、"好的"
 - 纯文本追问："为什么这么说"（不需要查数据）
 
+### 操作类请求的追问规则（重要）
+
+如果用户的问题是操作类请求，即使缺少参数，也不要追问。操作类请求缺少参数时，路由到对应的工具，让工具的确认弹窗让用户填写。
+
+判断方法：
+1. 用户的请求是否包含明确的操作动词？（入库、退款、发放、核销、回复、发送、拒绝、批准、同意）
+2. 用户是否指定了操作对象？（洗衣液、张三、优惠券）
+3. 如果动词+对象都有 → 意图明确，不需要追问
+4. 如果只有动词没有对象 → 可能需要追问
+5. 如果动词和对象都没有 → 需要追问
+
+示例：
+- "物料库存加入这个洗衣液" → 意图明确（入库洗衣液），不需要追问
+- "拒绝退款" → 意图明确（拒绝退款），不需要追问
+- "退款" → 意图不明确（哪个顾客？批准还是拒绝？），需要追问
+- "帮我处理一下" → 意图完全不明确，需要追问
+
 ### 特殊情况：确认性回复
 
 当用户回复"是的"、"对"、"是"、"确认"、"好的"等确认性词语时，需要根据对话历史判断确认的内容：
@@ -1001,6 +1018,66 @@ class TaskRouter:
             print(f"[Router] 问题检查失败: {str(e)}")
             return {"is_valid": True, "is_context_question": False, "need_clarify": False, "is_operation": False, "need_requery": False, "reason": "判断异常", "missing_info": "", "quick_questions": default_quick_questions}
     
+    def _generate_dynamic_quick_questions(self, question: str, missing_info: str, history_context: str) -> list:
+        """
+        根据追问上下文生成动态快捷问题
+        
+        Args:
+            question: 用户问题
+            missing_info: 缺少的信息
+            history_context: 对话历史
+        
+        Returns:
+            动态快捷问题列表
+        """
+        # 默认问题
+        default = [
+            "今天营业额多少？",
+            "本月经营情况如何？",
+            "有哪些套餐？",
+            "库存还有多少？",
+        ]
+        
+        question_lower = question.lower()
+        missing_lower = (missing_info or "").lower()
+        
+        # 根据缺失信息生成相关问题
+        if "数量" in missing_lower or "入库" in question_lower or "库存" in question_lower or "物料" in question_lower:
+            return ["入库1瓶", "入库10瓶", "入库1箱", "查看库存"]
+        
+        if "退款" in question_lower or "退款" in str(history_context or "").lower():
+            return ["查看退款记录", "查询待处理退款", "本月退款统计", "退款原因分析"]
+        
+        if "顾客" in question_lower or "客户" in question_lower:
+            return ["查询顾客信息", "查看顾客消费记录", "查询顾客余额", "新增顾客"]
+        
+        if "优惠券" in question_lower or "券" in question_lower:
+            return ["查看优惠券列表", "查询优惠券使用记录", "发放优惠券"]
+        
+        if "员工" in question_lower or "排班" in question_lower:
+            return ["查看员工列表", "查询员工绩效", "查看排班"]
+        
+        if "套餐" in question_lower:
+            return ["查看套餐列表", "套餐销售统计", "新增套餐"]
+        
+        if "评价" in question_lower or "反馈" in question_lower:
+            return ["查看评价列表", "待回复评价", "评价统计"]
+        
+        if "营业额" in question_lower or "收入" in question_lower:
+            return ["今日营业额", "本月营业额", "收支查询"]
+        
+        # 根据历史对话推断
+        if history_context:
+            history_lower = history_context.lower()
+            if "退款" in history_lower:
+                return ["查看退款记录", "查询待处理退款", "本月退款统计"]
+            if "顾客" in history_lower:
+                return ["查询顾客信息", "查看顾客消费记录"]
+            if "库存" in history_lower or "物料" in history_lower:
+                return ["查看库存", "库存预警", "入库操作"]
+        
+        return default
+    
     async def route(self, task: str, has_image: bool = False, shop_context: str = "") -> Dict[str, Any]:
         """
         判断任务路由
@@ -1060,10 +1137,14 @@ class TaskRouter:
                 "quick_questions": check_result.get("quick_questions", [])
             }
         
-        # 4b. 需要追问
+        # 4b. 需要追问（生成动态快捷问题）
         if check_result.get("need_clarify"):
             missing_info = check_result.get("missing_info", "")
             print(f"[Router] 需要追问，缺少信息: {missing_info}")
+            
+            # 生成动态快捷问题
+            dynamic_questions = self._generate_dynamic_quick_questions(task, missing_info, history_context)
+            
             return {
                 "mode": "clarify",
                 "agent": None,
@@ -1073,7 +1154,7 @@ class TaskRouter:
                 "plan": [],
                 "complexity": "simple",
                 "clarification": f"请问{missing_info}？" if missing_info else "请问您想了解什么？",
-                "quick_questions": check_result.get("quick_questions", [])
+                "quick_questions": dynamic_questions
             }
         
         # 4c. 纯文本上下文问题（不需要查询数据库，不需要执行操作）

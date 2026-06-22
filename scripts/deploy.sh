@@ -76,8 +76,7 @@ case $ACTION in
         sleep 10
         
         echo ""
-        echo "📐 拉取 Embedding 模型（bge-m3）..."
-        docker-compose exec -T ollama ollama pull bge-m3
+        echo "📐 Embedding 模型已切换为阿里百炼 text-embedding-v4（云端服务）"
         
         echo ""
         echo "=========================================="

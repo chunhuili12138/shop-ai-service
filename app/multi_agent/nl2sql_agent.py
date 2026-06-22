@@ -394,7 +394,7 @@ class NL2SQLAgent:
             schema: 数据库结构
             few_shot: Few-shot 示例
             experience: 经验池示例
-            count: 候选数量
+            count: 候选数量（限制为最多 2 个，避免超出 LLM API batch size 限制）
             history_context: 历史上下文
             route_context: 路由分析结果（Router 的理解、计划等）
         
@@ -402,6 +402,9 @@ class NL2SQLAgent:
             候选 SQL 列表
         """
         import asyncio
+        
+        # 限制候选数量，避免超出 LLM API batch size 限制
+        count = min(count, 2)
         
         llm = get_chat_llm(temperature=0.3)  # 使用较高温度增加多样性
         

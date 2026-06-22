@@ -77,10 +77,17 @@ def rebuild_index():
         except Exception as e:
             logger.warning(f"[VectorStore] 清空旧索引失败: {str(e)}")
 
-        # 4. 批量添加
+        # 4. 批量添加（分批处理，阿里百炼限制每批最多10条）
         texts = [doc if isinstance(doc, str) else str(doc) for doc in documents]
-        vectorstore.add_texts(texts=texts, metadatas=metadatas)
-        logger.info(f"[VectorStore] 索引重建完成: {len(texts)} 个文档块")
+        batch_size = 10  # 阿里百炼 text-embedding-v4 限制
+        total = len(texts)
+        for i in range(0, total, batch_size):
+            batch_texts = texts[i:i + batch_size]
+            batch_metadatas = metadatas[i:i + batch_size]
+            vectorstore.add_texts(texts=batch_texts, metadatas=batch_metadatas)
+            processed = min(i + batch_size, total)
+            logger.info(f"[VectorStore] 已处理 {processed}/{total} 个文档块")
+        logger.info(f"[VectorStore] 索引重建完成: {total} 个文档块")
 
         return True
 
