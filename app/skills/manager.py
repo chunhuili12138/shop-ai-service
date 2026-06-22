@@ -31,8 +31,8 @@ class SkillManager:
         self.register(Skill(
             id="monthly_business_analysis",
             name="本月经营情况分析",
-            description="分析本月的整体经营情况，包括营收、顾客、支出等",
-            keywords=["本月", "经营", "情况", "分析", "月度", "这个月"],
+            description="分析本月的整体经营情况，包括营收、顾客、支出、退款等",
+            keywords=["本月", "经营", "情况", "分析", "月度", "这个月", "月报"],
             patterns=[
                 r"(本月|这个月|月度).*?(经营|情况|分析|报告)",
                 r"(经营|情况).*?(分析|报告|总结)",
@@ -65,25 +65,236 @@ class SkillManager:
                 ),
                 SkillStep(
                     step=4,
+                    agent="nl2sql",
+                    task="查询本月退款数据",
+                    description="查询本月退款金额和笔数",
+                    query="SELECT COUNT(*) as refund_count, COALESCE(SUM(refund_amount), 0) as total_refund FROM refund_records WHERE shop_id = :shop_id AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE()) AND status = 2",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=5,
+                    agent="nl2sql",
+                    task="查询本月热销套餐",
+                    description="查询本月销量最高的套餐 TOP5",
+                    query="SELECT p.name, COUNT(*) as sales, SUM(pu.paid_amount) as revenue FROM purchases pu JOIN packages p ON pu.package_id = p.id WHERE pu.shop_id = :shop_id AND MONTH(pu.created_at) = MONTH(CURDATE()) AND pu.status = 1 GROUP BY p.id, p.name ORDER BY sales DESC LIMIT 5",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=6,
                     agent="llm",
                     task="汇总分析并给出建议",
                     description="基于以上数据进行分析并给出经营建议",
-                    depends_on=[1, 2, 3],
+                    depends_on=[1, 2, 3, 4, 5],
                     is_critical=True,
                 ),
             ],
-            priority=10,
+            priority=6,
+        ))
+        
+        # ========== 新增 Skill ==========
+        
+        # Skill 13: 退款分析
+        self.register(Skill(
+            id="refund_analysis",
+            name="退款分析",
+            description="分析退款情况，包括状态分布、原因分析、趋势等",
+            keywords=["退款", "退货", "退款率", "退款原因", "退款分析", "退款统计"],
+            patterns=[
+                r"退款.*?(分析|统计|原因|趋势|情况)",
+                r"(分析|统计).*?(退款|退货)",
+                r"退款.*?(率|原因|趋势)",
+            ],
+            steps=[
+                SkillStep(
+                    step=1,
+                    agent="nl2sql",
+                    task="查询退款状态统计",
+                    description="查询各状态的退款数量和金额",
+                    query="SELECT CASE status WHEN 1 THEN '处理中' WHEN 2 THEN '已完成' WHEN 3 THEN '已拒绝' END as status_name, COUNT(*) as count, COALESCE(SUM(refund_amount), 0) as total FROM refund_records WHERE shop_id = :shop_id GROUP BY status",
+                    is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="nl2sql",
+                    task="查询退款原因分布",
+                    description="查询已完成退款的原因分布",
+                    query="SELECT reason, COUNT(*) as count, COALESCE(SUM(refund_amount), 0) as total FROM refund_records WHERE shop_id = :shop_id AND status = 2 GROUP BY reason ORDER BY count DESC LIMIT 10",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=3,
+                    agent="llm",
+                    task="分析退款情况并给出建议",
+                    description="分析退款数据，找出问题和改进方向",
+                    depends_on=[1, 2],
+                    is_critical=True,
+                ),
+            ],
+            priority=8,
+        ))
+        
+        # Skill 14: 员工绩效
+        self.register(Skill(
+            id="staff_performance",
+            name="员工绩效",
+            description="分析员工绩效，包括核销数、考勤等",
+            keywords=["员工", "绩效", "业绩", "核销", "销售额", "排行"],
+            patterns=[
+                r"(员工|工作人员).*?(绩效|业绩|表现|排行)",
+                r"(绩效|业绩|表现).*?(员工|排行)",
+                r"员工.*?(核销|销售|业绩)",
+            ],
+            steps=[
+                SkillStep(
+                    step=1,
+                    agent="nl2sql",
+                    task="查询员工核销统计",
+                    description="查询本月员工核销次数",
+                    query="SELECT s.name, COUNT(gs.id) as checkins FROM staff s LEFT JOIN game_sessions gs ON s.id = gs.staff_id AND gs.shop_id = :shop_id AND MONTH(gs.start_time) = MONTH(CURDATE()) WHERE s.status = 1 GROUP BY s.id, s.name ORDER BY checkins DESC",
+                    is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="nl2sql",
+                    task="查询员工考勤统计",
+                    description="查询本月员工考勤情况",
+                    query="SELECT s.name, COUNT(CASE WHEN ar.status = 1 THEN 1 END) as normal_days, COUNT(CASE WHEN ar.status = 2 THEN 1 END) as late_days FROM staff s LEFT JOIN attendance_records ar ON s.id = ar.staff_id AND ar.shop_id = :shop_id AND MONTH(ar.date) = MONTH(CURDATE()) WHERE s.status = 1 GROUP BY s.id, s.name",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=3,
+                    agent="llm",
+                    task="分析员工绩效并给出建议",
+                    description="分析员工绩效数据，给出管理建议",
+                    depends_on=[1, 2],
+                    is_critical=True,
+                ),
+            ],
+            priority=7,
+        ))
+        
+        # Skill 15: 月度对比
+        self.register(Skill(
+            id="monthly_comparison",
+            name="月度对比",
+            description="对比本月和上月的经营数据",
+            keywords=["对比", "比较", "本月", "上月", "环比", "增长"],
+            patterns=[
+                r"(本月|上月|月).*?(对比|比较|环比|增长)",
+                r"对比.*?(月|月份)",
+                r"环比.*?(增长|下降|变化)",
+            ],
+            steps=[
+                SkillStep(
+                    step=1,
+                    agent="nl2sql",
+                    task="查询本月数据",
+                    description="查询本月营收、订单数据",
+                    query="SELECT COALESCE(SUM(paid_amount), 0) as revenue, COUNT(*) as orders FROM purchases WHERE shop_id = :shop_id AND MONTH(created_at) = MONTH(CURDATE()) AND YEAR(created_at) = YEAR(CURDATE()) AND status = 1",
+                    is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="nl2sql",
+                    task="查询上月数据",
+                    description="查询上月营收、订单数据",
+                    query="SELECT COALESCE(SUM(paid_amount), 0) as revenue, COUNT(*) as orders FROM purchases WHERE shop_id = :shop_id AND MONTH(created_at) = MONTH(DATE_SUB(CURDATE(), INTERVAL 1 MONTH)) AND status = 1",
+                    is_critical=True,
+                ),
+                SkillStep(
+                    step=3,
+                    agent="llm",
+                    task="对比分析并给出建议",
+                    description="对比本月和上月数据，分析变化原因",
+                    depends_on=[1, 2],
+                    is_critical=True,
+                ),
+            ],
+            priority=7,
+        ))
+        
+        # Skill 16: 营销效果
+        self.register(Skill(
+            id="marketing_effectiveness",
+            name="营销效果",
+            description="分析优惠券和营销活动的效果",
+            keywords=["营销", "优惠券", "券", "活动", "促销", "转化"],
+            patterns=[
+                r"(营销|优惠券|券|活动).*?(效果|分析|统计|转化)",
+                r"(效果|转化).*?(营销|优惠券|券|活动)",
+                r"优惠券.*?(使用|发放|效果)",
+            ],
+            steps=[
+                SkillStep(
+                    step=1,
+                    agent="nl2sql",
+                    task="查询优惠券使用统计",
+                    description="查询优惠券发放和使用情况",
+                    query="SELECT c.name, c.remain_stock, c.total_stock, (c.total_stock - c.remain_stock) as used FROM coupons c WHERE c.shop_id = :shop_id AND c.is_active = 1 ORDER BY used DESC",
+                    is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="llm",
+                    task="分析营销效果并给出建议",
+                    description="分析营销数据，给出优化建议",
+                    depends_on=[1],
+                    is_critical=True,
+                ),
+            ],
+            priority=6,
+        ))
+        
+        # Skill 17: 顾客画像
+        self.register(Skill(
+            id="customer_insights",
+            name="顾客画像",
+            description="分析顾客消费行为和偏好",
+            keywords=["顾客", "画像", "消费", "偏好", "频次", "会员"],
+            patterns=[
+                r"(顾客|客户|会员).*?(画像|分析|偏好|频次|消费习惯)",
+                r"(画像|分析).*?(顾客|客户|会员)",
+                r"顾客.*?(消费|偏好|习惯)",
+            ],
+            steps=[
+                SkillStep(
+                    step=1,
+                    agent="nl2sql",
+                    task="查询顾客消费频次分布",
+                    description="查询顾客购买次数分布",
+                    query="SELECT CASE WHEN cnt = 1 THEN '1次' WHEN cnt <= 3 THEN '2-3次' WHEN cnt <= 5 THEN '4-5次' ELSE '5次以上' END as frequency, COUNT(*) as customer_count FROM (SELECT customer_id, COUNT(*) as cnt FROM purchases WHERE shop_id = :shop_id AND status = 1 GROUP BY customer_id) t GROUP BY CASE WHEN cnt = 1 THEN '1次' WHEN cnt <= 3 THEN '2-3次' WHEN cnt <= 5 THEN '4-5次' ELSE '5次以上' END",
+                    is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="nl2sql",
+                    task="查询顾客来源分布",
+                    description="查询顾客来源渠道分布",
+                    query="SELECT source, COUNT(*) as count FROM customers WHERE shop_id = :shop_id AND is_deleted = 0 GROUP BY source ORDER BY count DESC",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=3,
+                    agent="llm",
+                    task="分析顾客画像并给出建议",
+                    description="分析顾客数据，给出运营建议",
+                    depends_on=[1, 2],
+                    is_critical=True,
+                ),
+            ],
+            priority=6,
         ))
         
         # Skill 2: 今日经营概况
         self.register(Skill(
             id="daily_business_summary",
             name="今日经营概况",
-            description="查看今天的经营数据概况",
-            keywords=["今天", "今日", "日报", "当天"],
+            description="查看今天的经营数据概况，包括营收、客流、热销套餐、库存预警等",
+            keywords=["今天", "今日", "日报", "当天", "今日概况", "今日经营"],
             patterns=[
-                r"(今天|今日|当天).*?(经营|情况|数据|概况|营业额)",
-                r"今.*?(报|经营|数据)",
+                r"(今天|今日|当天).*?(经营|情况|数据|概况|营业额|总结)",
+                r"今.*?(报|经营|数据|概况)",
+                r"今日.*?(总结|汇总|概况)",
             ],
             steps=[
                 SkillStep(
@@ -104,10 +315,34 @@ class SkillManager:
                 ),
                 SkillStep(
                     step=3,
+                    agent="nl2sql",
+                    task="查询今日新顾客数",
+                    description="查询今日新注册顾客数量",
+                    query="SELECT COUNT(*) as new_customers FROM customers WHERE shop_id = :shop_id AND DATE(created_at) = CURDATE() AND is_deleted = 0",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=4,
+                    agent="nl2sql",
+                    task="查询今日热销套餐",
+                    description="查询今日销量最高的套餐 TOP5",
+                    query="SELECT p.name, COUNT(*) as sales FROM purchases pu JOIN packages p ON pu.package_id = p.id WHERE pu.shop_id = :shop_id AND DATE(pu.created_at) = CURDATE() AND pu.status = 1 GROUP BY p.id, p.name ORDER BY sales DESC LIMIT 5",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=5,
+                    agent="nl2sql",
+                    task="查询库存预警",
+                    description="查询库存低于预警线的物料",
+                    query="SELECT m.name, COALESCE(i.quantity, 0) as current_stock, m.min_stock FROM materials m LEFT JOIN inventory i ON m.id = i.material_id WHERE m.shop_id = :shop_id AND COALESCE(i.quantity, 0) <= m.min_stock",
+                    is_critical=False,
+                ),
+                SkillStep(
+                    step=6,
                     agent="llm",
-                    task="汇总今日概况",
-                    description="汇总今日经营数据",
-                    depends_on=[1, 2],
+                    task="汇总今日经营数据",
+                    description="汇总今日经营数据，生成经营概况报告",
+                    depends_on=[1, 2, 3, 4, 5],
                     is_critical=True,
                 ),
             ],
@@ -198,6 +433,14 @@ class SkillManager:
                     query="SELECT name, type, duration_minutes, price, original_price, is_active FROM packages WHERE shop_id = :shop_id ORDER BY price ASC",
                     is_critical=True,
                 ),
+                SkillStep(
+                    step=2,
+                    agent="llm",
+                    task="分析套餐情况",
+                    description="分析套餐设置，给出优化建议",
+                    depends_on=[1],
+                    is_critical=False,
+                ),
             ],
             priority=6,
         ))
@@ -206,7 +449,7 @@ class SkillManager:
         self.register(Skill(
             id="staff_query",
             name="员工查询",
-            description="查询员工信息",
+            description="查询员工信息和绩效",
             keywords=["员工", "服务员", "导玩", "工作人员", "店员"],
             patterns=[
                 r"(员工|服务员|导玩|工作人员|店员).*?(查询|查看|有哪些|名单)",
@@ -220,6 +463,14 @@ class SkillManager:
                     description="查询所有员工信息",
                     query="SELECT s.name, s.phone, s.employment_type, s.status FROM staff s JOIN staff_shops ss ON s.id = ss.staff_id WHERE ss.shop_id = :shop_id AND s.status = 1",
                     is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="nl2sql",
+                    task="查询员工本月核销统计",
+                    description="查询员工本月核销次数",
+                    query="SELECT s.name, COUNT(gs.id) as checkins FROM staff s LEFT JOIN game_sessions gs ON s.id = gs.staff_id AND gs.shop_id = :shop_id AND MONTH(gs.start_time) = MONTH(CURDATE()) WHERE s.status = 1 GROUP BY s.id, s.name ORDER BY checkins DESC",
+                    is_critical=False,
                 ),
             ],
             priority=5,
@@ -292,7 +543,7 @@ class SkillManager:
         self.register(Skill(
             id="coupon_query",
             name="优惠券查询",
-            description="查询优惠券信息",
+            description="查询优惠券信息和使用情况",
             keywords=["优惠券", "券", "优惠", "折扣"],
             patterns=[
                 r"(优惠券|券|优惠|折扣).*?(查询|查看|有哪些|发放|使用)",
@@ -303,9 +554,17 @@ class SkillManager:
                     step=1,
                     agent="nl2sql",
                     task="查询优惠券信息",
-                    description="查询优惠券列表和使用情况",
+                    description="查询优惠券列表和库存",
                     query="SELECT name, type, value, total_stock, remain_stock, is_active FROM coupons WHERE shop_id = :shop_id ORDER BY created_at DESC",
                     is_critical=True,
+                ),
+                SkillStep(
+                    step=2,
+                    agent="llm",
+                    task="分析优惠券情况",
+                    description="分析优惠券使用情况，给出营销建议",
+                    depends_on=[1],
+                    is_critical=False,
                 ),
             ],
             priority=5,
