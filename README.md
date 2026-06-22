@@ -309,6 +309,28 @@ Authorization: Bearer-{shopId}-{token}
 | `reply_feedback` | PUT /api/feedbacks/reply | 回复评价 |
 | `send_notification` | POST /api/notificationsSend | 发送通知 |
 
+### Skills（预设任务模板）
+
+| # | Skill | 步骤 | 说明 |
+|---|-------|------|------|
+| 1 | 本月经营情况分析 | 6 | 营收+顾客+支出+退款+热销套餐+分析 |
+| 2 | 今日经营概况 | 6 | 营业额+核销+新顾客+热销套餐+库存预警+汇总 |
+| 3 | 顾客消费分析 | 2 | 消费统计+分析 |
+| 4 | 库存查询 | 2 | 库存状态+分析 |
+| 5 | 套餐查询 | 2 | 套餐列表+分析 |
+| 6 | 员工查询 | 2 | 员工信息+核销统计 |
+| 7 | 收支查询 | 3 | 收入+支出+利润分析 |
+| 8 | 排班查询 | 1 | 排班信息 |
+| 9 | 优惠券查询 | 2 | 优惠券信息+分析 |
+| 10 | 评价查询 | 2 | 评价列表+分析 |
+| 11 | 顾客信息查询 | 1 | 顾客基本信息 |
+| 12 | 顾客套餐剩余次数 | 1 | 剩余次数查询 |
+| 13 | 退款分析 | 3 | 状态统计+原因分布+分析建议 |
+| 14 | 员工绩效 | 3 | 核销统计+考勤统计+绩效分析 |
+| 15 | 月度对比 | 3 | 本月+上月+对比分析 |
+| 16 | 营销效果 | 2 | 优惠券使用+效果分析 |
+| 17 | 顾客画像 | 3 | 消费频次+来源分布+画像分析 |
+
 ---
 
 ## 后台系统导航
@@ -380,6 +402,30 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ## 更新日志
 
+### v0.7.0 (2026-06-21)
+
+**Skill 体系优化**
+- 优化"今日经营概况"：3步→6步，新增新顾客数、热销套餐、库存预警
+- 优化"本月经营情况分析"：4步→6步，新增退款统计、热销套餐
+- 新增 5 个 Skill：退款分析、员工绩效、月度对比、营销效果、顾客画像
+- 现有 Skill 增加分析步骤（套餐查询、员工查询、优惠券查询）
+- 所有 Skill SQL 查询对照数据库 schema 验证通过
+
+**Supervisor 重试机制**
+- `_execute_sub_tasks_serial_with_confirm` 添加重试逻辑（最多 2 次）
+- 查询型和操作型子任务都支持重试
+- 重试时发送进度通知
+
+**任务结果结构化传递**
+- `_execute_query_sub_task` 传递 `task_results` 参数
+- LLM Agent 接收独立的任务执行结果（不混入任务描述）
+- 系统提示词增加任务执行结果使用规则
+
+**Router 优化**
+- 合并重复的 `route()` 方法
+- `_check_question` 增加 `need_requery` 判断
+- 确认性回复规则（"是的"等确认语句）
+
 ### v0.6.0 (2026-06-21)
 
 **LLM 自主探索能力**
@@ -400,7 +446,6 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 **Router 优化**
 - 合并三个检查方法为 `_check_question`（一次 LLM 调用）
 - 新增 `need_requery` 判断（用户需要查询数据）
-- 新增确认性回复规则（"是的"等确认语句）
 - 统一数据查询路由（所有查询走 nl2sql）
 
 **批量确认优化**
@@ -426,7 +471,6 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 - 参数类型自动转换
 
 **Router 优化**
-- 查询工具能力表，LLM 知道何时用 tool/nl2sql
 - JSON 解析失败重试机制（最多 2 次）
 - 智能 fallback（操作类→TOOL，其他→RAG）
 
@@ -448,6 +492,63 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ### v1.0 (2026-06-01)
 - 初始版本
+
+---
+
+## 部署说明
+
+### 环境要求
+
+| 依赖 | 版本 |
+|------|------|
+| Python | 3.10+ |
+| MySQL | 8.0+ |
+| Redis | 6.0+ |
+| Node.js | 20+ (前端) |
+
+### 打包部署
+
+```bash
+# 后端打包
+cd shop-ai-service
+pip install -r requirements.txt
+python -m app.main
+
+# 前端打包
+cd shop-copilot-chat
+pnpm install
+pnpm build
+```
+
+### 环境变量
+
+```bash
+# 必需配置
+LLM_API_KEY=your-api-key
+LLM_BASE_URL=https://your-llm-endpoint
+MYSQL_HOST=localhost
+MYSQL_PORT=3306
+MYSQL_USER=root
+MYSQL_PASSWORD=your-password
+MYSQL_DATABASE=shop_operate_system
+REDIS_HOST=localhost
+REDIS_PORT=6379
+BACKEND_URL=http://localhost:8081
+ENVIRONMENT=production
+
+# 可选配置
+TOKEN_CACHE_TTL=300
+AGENT_TIMEOUT=60
+HITL_REFUND_THRESHOLD=100.0
+```
+
+### 生产环境注意事项
+
+1. **SSL 证书**：生产环境必须配置 SSL（`ENVIRONMENT=production`）
+2. **Redis**：确保 Redis 连接正常，用于 Token 缓存和防重复提交
+3. **MySQL**：确保数据库已初始化（执行 `shop_operate_system_db.sql`）
+4. **日志**：生产环境日志级别建议设为 WARNING
+5. **超时**：工具执行超时默认 60 秒，可根据需要调整
 
 ---
 
