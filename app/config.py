@@ -86,8 +86,8 @@ class Settings(BaseSettings):
     # ========== RAG 配置 ==========
     RAG_TOP_K: int = 5  # 检索返回文档数
     RAG_SCORE_THRESHOLD: float = 0.6  # 相关性阈值
-    RAG_CHUNK_SIZE: int = 500  # 文档分块大小
-    RAG_CHUNK_OVERLAP: int = 50  # 分块重叠
+    RAG_CHUNK_SIZE: int = 1000  # 文档分块大小（增大减少块数，降低API调用）
+    RAG_CHUNK_OVERLAP: int = 100  # 分块重叠
 
     # ========== Agent 配置 ==========
     AGENT_MAX_ITERATIONS: int = 10  # Agent最大迭代次数
