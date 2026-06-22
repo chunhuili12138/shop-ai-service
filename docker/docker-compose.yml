@@ -7,60 +7,53 @@ services:
       context: ..
       dockerfile: docker/Dockerfile
     container_name: shop-copilot-ai
+    env_file:
+      - .env.production
     ports:
       - "8000:8000"
     environment:
-      - ENVIRONMENT=production
-      - DEBUG=false
-      # LLM 配置
+      # LLM 配置（从env文件读取）
       - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_BASE_URL=${LLM_BASE_URL:-https://api.deepseek.com/v1}
-      - LLM_MODEL=${LLM_MODEL:-deepseek-chat}
-      # Embedding 配置（阿里百炼 text-embedding-v4）
+      - LLM_BASE_URL=${LLM_BASE_URL}
+      - LLM_MODEL=${LLM_MODEL}
+      # Embedding 配置（从env文件读取）
       - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
-      - EMBEDDING_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-      - EMBEDDING_MODEL=text-embedding-v4
-      # MySQL 配置（使用容器内 MySQL）
-      - MYSQL_HOST=mysql
-      - MYSQL_PORT=3306
-      - MYSQL_USER=${MYSQL_USER:-root}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD:-root}
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-shop_operate_system}
-      # Redis 配置（使用容器内 Redis）
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      # LangFuse 配置（可选）
-      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED:-false}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY:-}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY:-}
-      - LANGFUSE_HOST=${LANGFUSE_HOST:-https://cloud.langfuse.com}
+      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL}
+      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
+      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
+      - EMBEDDING_USE_CUSTOM_DIMENSIONS=${EMBEDDING_USE_CUSTOM_DIMENSIONS}
+      # MySQL 配置（从env文件读取）
+      - MYSQL_HOST=${MYSQL_HOST}
+      - MYSQL_PORT=${MYSQL_PORT}
+      - MYSQL_USER=${MYSQL_USER}
+      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
+      # Redis 配置（从env文件读取）
+      - REDIS_HOST=${REDIS_HOST}
+      - REDIS_PORT=${REDIS_PORT}
+      # LangFuse 配置（从env文件读取）
+      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
+      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
+      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
+      - LANGFUSE_HOST=${LANGFUSE_HOST}
+      # 后台管理系统配置（从env文件读取）
+      - BACKEND_URL=${BACKEND_URL}
     volumes:
       - ../data:/app/data
     depends_on:
-      ollama:
-        condition: service_started
       mysql:
         condition: service_healthy
       redis:
         condition: service_started
+    deploy:
+      resources:
+        limits:
+          memory: 1536M
+        reservations:
+          memory: 512M
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # ========== Ollama 服务（本地 Embedding）==========
-  ollama:
-    image: ollama/ollama:latest
-    container_name: shop-copilot-ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -69,13 +62,19 @@ services:
   mysql:
     image: mysql:8.0
     container_name: shop-copilot-mysql
-    ports:
-      - "3306:3306"
+    env_file:
+      - .env.production
     environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD:-root}
-      - MYSQL_DATABASE=${MYSQL_DATABASE:-shop_operate_system}
+      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
+      - MYSQL_DATABASE=${MYSQL_DATABASE}
     volumes:
       - mysql_data:/var/lib/mysql
+    deploy:
+      resources:
+        limits:
+          memory: 1024M
+        reservations:
+          memory: 256M
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
@@ -87,10 +86,14 @@ services:
   redis:
     image: redis:7-alpine
     container_name: shop-copilot-redis
-    ports:
-      - "6379:6379"
     volumes:
       - redis_data:/data
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+        reservations:
+          memory: 64M
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
@@ -99,6 +102,5 @@ services:
       retries: 3
 
 volumes:
-  ollama_data:
   mysql_data:
   redis_data:

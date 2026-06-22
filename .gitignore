@@ -22,6 +22,10 @@ ENV/
 # Environment
 .env
 .env.local
+.env.production
+.env.staging
+docker/.env*
+!docker/.env.example
 
 # Data
 data/
@@ -33,3 +37,7 @@ data/
 
 # Chroma
 data/chroma_db/
+
+# Uploads
+C:/shop-operate/uploads/
+uploads/
