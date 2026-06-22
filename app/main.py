@@ -158,6 +158,13 @@ app.include_router(security_router, prefix="/api/nl2sql/security", tags=["NL2SQL
 app.include_router(knowledge_router, prefix="/api/knowledge", tags=["知识库管理"])
 app.include_router(file_router, tags=["文件上传"])
 
+# 静态文件服务（上传文件）
+from fastapi.staticfiles import StaticFiles
+import os
+UPLOAD_DIR = "C:/shop-operate/uploads"
+if os.path.exists(UPLOAD_DIR):
+    app.mount("/file/upload", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+
 
 @app.get("/")
 async def root():

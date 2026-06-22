@@ -97,8 +97,8 @@ async def upload_file(
             
             vision_agent = get_vision_agent()
             
-            # 构建图片URL（本地文件路径）
-            image_url = f"file://{os.path.abspath(filepath)}"
+            # 构建图片URL（使用相对路径，Vision Agent 会转为 base64）
+            image_url = f"/file/upload/{user_context.shop_id}/{filename}"
             
             # 调用视觉Agent识别
             agent_result = await vision_agent.execute(

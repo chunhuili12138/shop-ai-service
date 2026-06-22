@@ -107,18 +107,21 @@ class VisionAgent:
         OCR 提取文字
         
         Args:
-            image_url: 图像 URL
+            image_url: 图像 URL（支持 http/https、file://、/file/upload/...）
         
         Returns:
             识别结果
         """
         try:
+            # 处理图片 URL：转为 base64 或完整 http URL
+            processed_url = self._process_image_url(image_url)
+            
             messages = [
                 {
                     "role": "user",
                     "content": [
                         {"type": "text", "text": OCR_PROMPT},
-                        {"type": "image_url", "image_url": {"url": image_url}}
+                        {"type": "image_url", "image_url": {"url": processed_url}}
                     ]
                 }
             ]
@@ -128,6 +131,51 @@ class VisionAgent:
         except Exception as e:
             print(f"[VisionAgent] OCR 失败: {str(e)}")
             raise
+    
+    def _process_image_url(self, image_url: str) -> str:
+        """
+        处理图片 URL：转为 base64 或完整 http URL
+        
+        Args:
+            image_url: 原始图片 URL
+        
+        Returns:
+            处理后的 URL（base64 或 http）
+        """
+        import base64
+        import os
+        
+        # 如果已经是 http/https URL，直接返回
+        if image_url.startswith("http://") or image_url.startswith("https://"):
+            return image_url
+        
+        # 如果是 base64，直接返回
+        if image_url.startswith("data:"):
+            return image_url
+        
+        # 如果是 file:// URL，转为 base64
+        if image_url.startswith("file://"):
+            file_path = image_url[7:]  # 去掉 file://
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    image_data = f.read()
+                ext = os.path.splitext(file_path)[1].lower()
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext.lstrip('.'), "image/jpeg")
+                return f"data:{mime};base64,{base64.b64encode(image_data).decode()}"
+        
+        # 如果是相对路径（如 /file/upload/5/filename.jpg），尝试读取本地文件
+        if image_url.startswith("/file/upload/"):
+            # 转换为本地文件路径
+            file_path = os.path.join("C:/shop-operate/uploads", image_url.replace("/file/upload/", ""))
+            if os.path.exists(file_path):
+                with open(file_path, "rb") as f:
+                    image_data = f.read()
+                ext = os.path.splitext(file_path)[1].lower()
+                mime = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "gif": "image/gif", "webp": "image/webp"}.get(ext.lstrip('.'), "image/jpeg")
+                return f"data:{mime};base64,{base64.b64encode(image_data).decode()}"
+        
+        # 降级：返回原始 URL
+        return image_url
     
     async def process_with_instruction(self, ocr_text: str, task: str) -> str:
         """
