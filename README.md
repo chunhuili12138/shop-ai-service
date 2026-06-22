@@ -402,6 +402,38 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ## 更新日志
 
+### v0.8.0 (2026-06-22)
+
+**Router 优化**
+- `_check_question` prompt 增加操作类请求不追问规则
+- 动态快捷问题生成（根据追问上下文生成相关问题）
+- quick_questions SSE 事件顺序修复（移到 done 之前）
+- `_generate_dynamic_quick_questions` 增加关键词匹配
+
+**NL2SQL 优化**
+- 并行候选数量限制为 2（避免超出 LLM API batch size 限制）
+- NL2SQL 缓存 key 优化（用 original_task 做 key）
+
+**Agent Loop 优化**
+- 选择弹窗标题优化（使用中文描述而非字段名）
+- 物料不存在时返回详细提示（引导到后台添加）
+- 修复 TOOL_DISPLAY_NAMES 作用域问题
+- Agent Loop 不校验 required 参数（由工具 confirm 弹窗处理）
+
+**LLM Agent 优化**
+- 提示词增加工具能力列表（防止 LLM 编造"不支持"）
+- 提示词增加后台系统导航信息
+
+**图片上传**
+- 实现 handleUpload 功能（调用 uploadFile API）
+- 新增图片预览栏（显示缩略图 + 移除按钮）
+- Vision Agent 使用 base64 编码（替代 file:// URL）
+- 配置静态文件服务（/file/upload/ 路径）
+
+**其他优化**
+- Supervisor 任务在 SSE 断开后自动取消
+- 流式输出与 session 内容一致性修复
+
 ### v0.7.0 (2026-06-21)
 
 **Skill 体系优化**
