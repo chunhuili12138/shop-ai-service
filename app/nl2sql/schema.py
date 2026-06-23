@@ -123,9 +123,17 @@ def get_table_ddl(table_name: str = None) -> str:
 SCHEMA_INFO = """
 ## 数据库表结构说明（fallback，优先使用 JSON 自动生成的版本）
 
+### 业务逻辑说明（重要！）
+- **收入**：指已核销确认的收入，查询 `revenue_records` 表的 `amount` 字段，按 `created_at` 或 `confirmed_at` 筛选时间
+- **支出**：查询 `expenses` 表的 `amount` 字段
+- **购买**：指顾客购买套餐的记录（预收款），查询 `purchases` 表的 `paid_amount` 字段
+- **营收/营业额**：与"收入"同义，查询 `revenue_records` 表
+- **本月**：使用 WHERE YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW())
+
 ### 核心表
 - **customers**: id, shop_id, nickname, phone, gender, birthday, source, tags, remark, is_deleted, created_at
 - **purchases**: id, shop_id, customer_id, package_id, channel, total_amount, paid_amount, payment_method, status(1=有效,2=已退款,3=已过期), is_deleted, created_at
+- **revenue_records**: id, shop_id, game_session_id, purchase_id, amount, confirmed_at, confirmed_by, customer_id, payment_method, is_deleted, created_at（收入确认记录，核销后生成）
 - **refund_records**: id, shop_id, purchase_id, refund_amount, reason, deducted_amount, status(1=处理中,2=已完成,3=已拒绝), is_deleted, created_at
 - **customer_sessions**: id, shop_id, customer_id, purchase_id, session_date, status(1=可用,2=已核销,3=已过期,4=已退款), is_deleted
 - **game_sessions**: id, shop_id, customer_id, customer_session_id, staff_id, start_time, end_time, status(1=进行中,2=已完成), is_deleted
