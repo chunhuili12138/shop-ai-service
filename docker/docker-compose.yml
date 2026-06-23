@@ -11,33 +11,6 @@ services:
       - .env.production
     ports:
       - "8000:8000"
-    environment:
-      # LLM 配置（从env文件读取）
-      - LLM_API_KEY=${LLM_API_KEY}
-      - LLM_BASE_URL=${LLM_BASE_URL}
-      - LLM_MODEL=${LLM_MODEL}
-      # Embedding 配置（从env文件读取）
-      - EMBEDDING_API_KEY=${EMBEDDING_API_KEY}
-      - EMBEDDING_BASE_URL=${EMBEDDING_BASE_URL}
-      - EMBEDDING_MODEL=${EMBEDDING_MODEL}
-      - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
-      - EMBEDDING_USE_CUSTOM_DIMENSIONS=${EMBEDDING_USE_CUSTOM_DIMENSIONS}
-      # MySQL 配置（外部服务器）
-      - MYSQL_HOST=${MYSQL_HOST}
-      - MYSQL_PORT=${MYSQL_PORT}
-      - MYSQL_USER=${MYSQL_USER}
-      - MYSQL_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
-      # Redis 配置（从env文件读取）
-      - REDIS_HOST=${REDIS_HOST}
-      - REDIS_PORT=${REDIS_PORT}
-      # LangFuse 配置（从env文件读取）
-      - LANGFUSE_ENABLED=${LANGFUSE_ENABLED}
-      - LANGFUSE_PUBLIC_KEY=${LANGFUSE_PUBLIC_KEY}
-      - LANGFUSE_SECRET_KEY=${LANGFUSE_SECRET_KEY}
-      - LANGFUSE_HOST=${LANGFUSE_HOST}
-      # 后台管理系统配置（从env文件读取）
-      - BACKEND_URL=${BACKEND_URL}
     volumes:
       - ../data:/app/data
     depends_on:
