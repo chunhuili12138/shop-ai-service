@@ -124,13 +124,45 @@ SCHEMA_INFO = """
 ## 数据库表结构说明（fallback，优先使用 JSON 自动生成的版本）
 
 ### 业务逻辑说明（重要！）
-- **收入**：指已核销确认的收入，查询 `revenue_records` 表的 `amount` 字段，按 `created_at` 或 `confirmed_at` 筛选时间
-- **支出**：查询 `expenses` 表的 `amount` 字段
-- **购买**：指顾客购买套餐的记录（预收款），查询 `purchases` 表的 `paid_amount` 字段
-- **营收/营业额**：与"收入"同义，查询 `revenue_records` 表
-- **本月**：使用 WHERE YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW())
-- **退款**：查询 `refund_records` 表，status(1=处理中,2=已完成,3=已拒绝)
-- **核销**：查询 `game_sessions` 表，status(1=进行中,2=已完成)
+
+#### 收入相关
+- **收入/营收/营业额**：指已核销确认的收入，查询 `revenue_records` 表的 `amount` 字段
+- **今日收入**：`WHERE DATE(created_at) = CURDATE()`
+- **本月收入**：`WHERE YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW())`
+- **收入明细**：关联 `game_sessions` 和 `customers` 表获取详情
+
+#### 支出相关
+- **支出/费用**：查询 `expenses` 表的 `amount` 字段
+- **今日支出**：`WHERE DATE(expense_date) = CURDATE()`
+- **本月支出**：`WHERE YEAR(expense_date) = YEAR(NOW()) AND MONTH(expense_date) = MONTH(NOW())`
+- **支出分类**：关联 `expense_categories` 表获取分类名称
+
+#### 购买相关
+- **购买记录**：查询 `purchases` 表，这是预收款记录，不是确认收入
+- **购买金额**：使用 `paid_amount` 字段（实付金额）
+- **有效购买**：`status = 1`（1=有效, 2=已退款, 3=已过期）
+
+#### 退款相关
+- **退款记录**：查询 `refund_records` 表
+- **退款状态**：status(1=处理中, 2=已完成, 3=已拒绝)
+- **退款金额**：使用 `refund_amount` 字段
+
+#### 核销相关
+- **核销记录**：查询 `game_sessions` 表
+- **核销状态**：status(1=进行中, 2=已完成)
+- **今日核销**：`WHERE DATE(start_time) = CURDATE()`
+
+#### 顾客相关
+- **顾客数量**：查询 `customers` 表，`is_deleted = 0`
+- **新顾客**：按 `created_at` 筛选今日/本月新增
+- **顾客消费**：关联 `purchases` 或 `customer_wallets` 表
+
+#### 时间筛选
+- **今日**：`WHERE DATE(created_at) = CURDATE()`
+- **本周**：`WHERE YEARWEEK(created_at) = YEARWEEK(NOW())`
+- **本月**：`WHERE YEAR(created_at) = YEAR(NOW()) AND MONTH(created_at) = MONTH(NOW())`
+- **近7天**：`WHERE created_at >= DATE_SUB(NOW(), INTERVAL 7 DAY)`
+- **近30天**：`WHERE created_at >= DATE_SUB(NOW(), INTERVAL 30 DAY)`
 
 ### 顾客管理表
 - **customers**: id, shop_id, nickname, phone, gender(0=未知,1=男,2=女), birthday, source(渠道), tags, remark, is_deleted, created_at
