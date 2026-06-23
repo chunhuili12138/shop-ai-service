@@ -12,7 +12,7 @@
 | **关系数据库** | MySQL 8.0+ |
 | **缓存** | Redis |
 | **可观测性** | LangFuse |
-| **密码加密** | cachetools (TTLCache) |
+| **缓存工具** | cachetools (TTLCache) |
 
 ---
 
