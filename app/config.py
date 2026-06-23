@@ -62,7 +62,9 @@ class Settings(BaseSettings):
 
     @property
     def MYSQL_URL(self) -> str:
-        return f"mysql+pymysql://{self.MYSQL_USER}:{self.MYSQL_PASSWORD}@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
+        from urllib.parse import quote_plus
+        password = quote_plus(self.MYSQL_PASSWORD)
+        return f"mysql+pymysql://{self.MYSQL_USER}:{password}@{self.MYSQL_HOST}:{self.MYSQL_PORT}/{self.MYSQL_DATABASE}"
 
     # ========== Redis 配置（复用现有系统）==========
     REDIS_HOST: str = "localhost"

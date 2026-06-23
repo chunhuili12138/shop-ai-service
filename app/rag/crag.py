@@ -190,9 +190,13 @@ class CRAG:
                 "documents_text": docs_text,
             })
 
-            # 解析 JSON 数组
+            # 解析 JSON 数组（健壮版本）
             import json as _json
+            import re
+            
             content = response.content.strip()
+            
+            # 移除 markdown 代码块
             if "```json" in content:
                 start = content.find("```json") + 7
                 end = content.find("```", start)
@@ -201,8 +205,29 @@ class CRAG:
                 start = content.find("```") + 3
                 end = content.find("```", start)
                 content = content[start:end].strip()
-
-            grades = _json.loads(content)
+            
+            # 使用正则表达式提取 JSON 数组
+            json_match = re.search(r'\[.*\]', content, re.DOTALL)
+            if json_match:
+                content = json_match.group(0)
+            
+            # 修复常见的 JSON 格式问题
+            content = content.replace('\n', ' ').replace('\r', '')
+            content = re.sub(r',\s*]', ']', content)  # 移除数组尾部逗号
+            content = re.sub(r',\s*}', '}', content)  # 移除对象尾部逗号
+            
+            # 尝试解析 JSON
+            try:
+                grades = _json.loads(content)
+            except _json.JSONDecodeError as json_err:
+                print(f"[CRAG] JSON 解析失败: {str(json_err)}，尝试逐个提取")
+                # 尝试使用正则表达式逐个提取
+                grades = []
+                pattern = r'\{[^{}]*"doc_id"\s*:\s*(\d+)[^{}]*"grade"\s*:\s*"(\w+)"[^{}]*\}'
+                for match in re.finditer(pattern, content, re.DOTALL):
+                    grades.append({"doc_id": int(match.group(1)), "grade": match.group(2)})
+                if not grades:
+                    raise _json.JSONDecodeError("无法提取任何分级结果", content, 0)
 
             # 构建结果（与旧接口格式兼容）
             document_grades = []

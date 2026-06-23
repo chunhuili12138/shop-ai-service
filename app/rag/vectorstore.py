@@ -4,6 +4,7 @@
 """
 
 import logging
+import chromadb
 from langchain_chroma import Chroma
 from langchain_core.vectorstores import VectorStore
 from app.config import settings
@@ -12,29 +13,53 @@ from app.chroma_config import chroma_settings
 
 logger = logging.getLogger(__name__)
 
+# HNSW 参数配置
+HNSW_METADATA = {
+    "hnsw:space": "cosine",
+    "hnsw:M": 32,
+    "hnsw:construction_ef": 200,
+    "hnsw:search_ef": 100,
+}
+
+
+def _get_or_create_collection(collection_name: str, persist_directory: str):
+    """获取或创建 collection（带 HNSW 参数）"""
+    client = chromadb.PersistentClient(path=persist_directory, settings=chroma_settings)
+    
+    try:
+        # 尝试获取现有 collection
+        collection = client.get_collection(collection_name)
+        # 检查 metadata 是否已设置
+        if collection.metadata is None or "hnsw:space" not in (collection.metadata or {}):
+            logger.info(f"[VectorStore] Collection {collection_name} 缺少 HNSW 参数，需要重建索引")
+        return collection
+    except Exception:
+        # collection 不存在，创建新的并设置 HNSW 参数
+        logger.info(f"[VectorStore] 创建新 collection: {collection_name}，设置 HNSW 参数")
+        collection = client.create_collection(
+            name=collection_name,
+            metadata=HNSW_METADATA,
+        )
+        return collection
+
 
 def get_vectorstore() -> VectorStore:
-    """获取向量库实例（带 HNSW 参数优化）"""
+    """获取向量库实例"""
     embeddings = get_embeddings()
 
     if settings.VECTOR_STORE_TYPE == "chroma":
+        # 确保 collection 存在
+        _get_or_create_collection(
+            settings.CHROMA_COLLECTION_NAME,
+            settings.CHROMA_PERSIST_DIR,
+        )
+        
         vs = Chroma(
             collection_name=settings.CHROMA_COLLECTION_NAME,
             embedding_function=embeddings,
             persist_directory=settings.CHROMA_PERSIST_DIR,
             client_settings=chroma_settings,
         )
-        # 设置 HNSW 参数（解决 "ef or M is too small" 错误）
-        try:
-            collection = vs._collection
-            collection.modify(metadata={
-                "hnsw:space": "cosine",
-                "hnsw:M": 32,
-                "hnsw:construction_ef": 200,
-                "hnsw:search_ef": 100,
-            })
-        except Exception:
-            pass  # 首次创建时可能失败，不影响使用
         return vs
     else:
         raise ValueError(f"不支持的向量库类型: {settings.VECTOR_STORE_TYPE}")
@@ -47,7 +72,7 @@ def rebuild_index():
     流程：
     1. 加载所有 .md 文件
     2. 分块
-    3. 清空旧 collection
+    3. 删除旧 collection 并重新创建（带 HNSW 参数）
     4. add_texts 到 ChromaDB
     """
     try:
@@ -65,17 +90,33 @@ def rebuild_index():
 
         logger.info(f"[VectorStore] 加载了 {len(documents)} 个文档块")
 
-        # 2. 获取向量库
-        vectorstore = get_vectorstore()
-
-        # 3. 清空旧 collection
+        # 2. 删除旧 collection 并重新创建（带 HNSW 参数）
+        client = chromadb.PersistentClient(
+            path=settings.CHROMA_PERSIST_DIR,
+            settings=chroma_settings,
+        )
+        
         try:
-            existing = vectorstore._collection.get()
-            if existing and existing.get("ids"):
-                vectorstore._collection.delete(ids=existing["ids"])
-                logger.info(f"[VectorStore] 清空旧索引: {len(existing['ids'])} 条")
+            client.delete_collection(settings.CHROMA_COLLECTION_NAME)
+            logger.info(f"[VectorStore] 删除旧 collection: {settings.CHROMA_COLLECTION_NAME}")
         except Exception as e:
-            logger.warning(f"[VectorStore] 清空旧索引失败: {str(e)}")
+            logger.info(f"[VectorStore] collection 不存在，跳过删除: {str(e)}")
+        
+        # 创建新 collection 并设置 HNSW 参数
+        collection = client.create_collection(
+            name=settings.CHROMA_COLLECTION_NAME,
+            metadata=HNSW_METADATA,
+        )
+        logger.info(f"[VectorStore] 创建新 collection，HNSW 参数: {HNSW_METADATA}")
+
+        # 3. 获取向量库实例
+        embeddings = get_embeddings()
+        vectorstore = Chroma(
+            collection_name=settings.CHROMA_COLLECTION_NAME,
+            embedding_function=embeddings,
+            persist_directory=settings.CHROMA_PERSIST_DIR,
+            client_settings=chroma_settings,
+        )
 
         # 4. 批量添加（分批处理，阿里百炼限制每批最多10条）
         texts = [doc if isinstance(doc, str) else str(doc) for doc in documents]
@@ -87,7 +128,10 @@ def rebuild_index():
             vectorstore.add_texts(texts=batch_texts, metadatas=batch_metadatas)
             processed = min(i + batch_size, total)
             logger.info(f"[VectorStore] 已处理 {processed}/{total} 个文档块")
-        logger.info(f"[VectorStore] 索引重建完成: {total} 个文档块")
+        
+        # 验证 HNSW 参数
+        final_collection = client.get_collection(settings.CHROMA_COLLECTION_NAME)
+        logger.info(f"[VectorStore] 索引重建完成: {total} 个文档块, metadata: {final_collection.metadata}")
 
         return True
 
