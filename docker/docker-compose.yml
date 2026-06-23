@@ -22,7 +22,7 @@ services:
       - EMBEDDING_MODEL=${EMBEDDING_MODEL}
       - EMBEDDING_DIMENSIONS=${EMBEDDING_DIMENSIONS}
       - EMBEDDING_USE_CUSTOM_DIMENSIONS=${EMBEDDING_USE_CUSTOM_DIMENSIONS}
-      # MySQL 配置（从env文件读取）
+      # MySQL 配置（外部服务器）
       - MYSQL_HOST=${MYSQL_HOST}
       - MYSQL_PORT=${MYSQL_PORT}
       - MYSQL_USER=${MYSQL_USER}
@@ -41,8 +41,6 @@ services:
     volumes:
       - ../data:/app/data
     depends_on:
-      mysql:
-        condition: service_healthy
       redis:
         condition: service_started
     deploy:
@@ -57,30 +55,6 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
-
-  # ========== MySQL 服务 ==========
-  mysql:
-    image: mysql:8.0
-    container_name: shop-copilot-mysql
-    env_file:
-      - .env.production
-    environment:
-      - MYSQL_ROOT_PASSWORD=${MYSQL_PASSWORD}
-      - MYSQL_DATABASE=${MYSQL_DATABASE}
-    volumes:
-      - mysql_data:/var/lib/mysql
-    deploy:
-      resources:
-        limits:
-          memory: 1024M
-        reservations:
-          memory: 256M
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # ========== Redis 服务 ==========
   redis:
@@ -102,5 +76,4 @@ services:
       retries: 3
 
 volumes:
-  mysql_data:
   redis_data:
