@@ -107,13 +107,15 @@ def start_scheduler():
     定时任务：
     - 每小时同步套餐信息（从API获取最新数据）
     - 每天凌晨2点同步全部知识库
+    - 每天凌晨3点同步Schema
     """
     schedule.every(1).hours.do(sync_packages_job)
     schedule.every().day.at("02:00").do(sync_all_knowledge_job)
     schedule.every().day.at("03:00").do(sync_schema_job)
-    schedule.every().day.at("04:00").do(rebuild_knowledge_index_job)
+    # 禁用定时重建索引（避免消耗embedding token，改为手动触发或知识库同步时自动重建）
+    # schedule.every().day.at("04:00").do(rebuild_knowledge_index_job)
 
-    logger.info("定时任务已启动：每小时同步套餐，每天凌晨2点同步知识库，3点同步Schema，4点重建索引")
+    logger.info("定时任务已启动：每小时同步套餐，每天凌晨2点同步知识库，3点同步Schema")
 
     def run_scheduler():
         while True:
