@@ -65,10 +65,35 @@ FEW_SHOT_EXAMPLES = [
         "question": "店里有几个员工",
         "sql": "SELECT COUNT(*) as staff_count FROM staff s JOIN staff_shops ss ON s.id = ss.staff_id WHERE ss.shop_id = :shop_id AND s.is_deleted = 0",
     },
-    # 排班查询
+    # 排班查询 (type: 1=上班, 2=休息)
     {
         "question": "今天的排班情况",
         "sql": "SELECT s.name, ss.start_time, ss.end_time FROM staff_schedules ss JOIN staff s ON ss.staff_id = s.id WHERE ss.shop_id = :shop_id AND ss.schedule_date = CURDATE()",
+    },
+    {
+        "question": "今天谁休息",
+        "sql": "SELECT s.name FROM staff_schedules ss JOIN staff s ON ss.staff_id = s.id WHERE ss.shop_id = :shop_id AND ss.schedule_date = CURDATE() AND ss.type = 2",
+    },
+    {
+        "question": "本周排班表",
+        "sql": "SELECT s.name, ss.schedule_date, ss.start_time, ss.end_time, CASE WHEN ss.type = 1 THEN '上班' ELSE '休息' END as type_text FROM staff_schedules ss JOIN staff s ON ss.staff_id = s.id WHERE ss.shop_id = :shop_id AND ss.schedule_date BETWEEN CURDATE() AND DATE_ADD(CURDATE(), INTERVAL 7 DAY) ORDER BY ss.schedule_date, s.name",
+    },
+    # 考勤查询 (status: 1=正常, 2=迟到, 3=早退, 4=加班)
+    {
+        "question": "今天谁迟到了",
+        "sql": "SELECT s.name, ar.check_in_time FROM attendance_records ar JOIN staff s ON ar.staff_id = s.id WHERE ar.shop_id = :shop_id AND ar.date = CURDATE() AND ar.status = 2",
+    },
+    {
+        "question": "本月谁加班最多",
+        "sql": "SELECT s.name, COUNT(*) as overtime_count FROM attendance_records ar JOIN staff s ON ar.staff_id = s.id WHERE ar.shop_id = :shop_id AND ar.status = 4 AND YEAR(ar.date) = YEAR(NOW()) AND MONTH(ar.date) = MONTH(NOW()) GROUP BY s.id ORDER BY overtime_count DESC LIMIT 10",
+    },
+    {
+        "question": "本月考勤统计",
+        "sql": "SELECT s.name, SUM(CASE WHEN ar.status = 1 THEN 1 ELSE 0 END) as normal_count, SUM(CASE WHEN ar.status = 2 THEN 1 ELSE 0 END) as late_count, SUM(CASE WHEN ar.status = 3 THEN 1 ELSE 0 END) as early_leave_count, SUM(CASE WHEN ar.status = 4 THEN 1 ELSE 0 END) as overtime_count FROM attendance_records ar JOIN staff s ON ar.staff_id = s.id WHERE ar.shop_id = :shop_id AND YEAR(ar.date) = YEAR(NOW()) AND MONTH(ar.date) = MONTH(NOW()) GROUP BY s.id",
+    },
+    {
+        "question": "张三最近的考勤记录",
+        "sql": "SELECT ar.date, ar.check_in_time, ar.check_out_time, CASE WHEN ar.status = 1 THEN '正常' WHEN ar.status = 2 THEN '迟到' WHEN ar.status = 3 THEN '早退' WHEN ar.status = 4 THEN '加班' END as status_text FROM attendance_records ar JOIN staff s ON ar.staff_id = s.id WHERE ar.shop_id = :shop_id AND s.name LIKE '%张三%' ORDER BY ar.date DESC LIMIT 20",
     },
     # 优惠券查询
     {

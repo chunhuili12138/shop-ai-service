@@ -501,7 +501,7 @@ class SchemaLinker:
                     "check_in_time": "签到时间",
                     "check_out_time": "签退时间",
                     "date": "日期",
-                    "status": "状态",
+                    "status": "状态（1正常/2迟到/3早退/4加班）",
                     "created_at": "创建时间"
                 }
             },
