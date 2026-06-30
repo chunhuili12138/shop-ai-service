@@ -407,7 +407,7 @@ class NL2SQLAgent:
     
     async def _execute_single_query(self, task: str, context: UserContext) -> AgentResult:
         """
-        执行单个查询(简化版)
+        执行单个查询(带自动修复)
         
         Args:
             task: 查询问题
@@ -416,6 +416,9 @@ class NL2SQLAgent:
         Returns:
             执行结果
         """
+        max_retries = 2
+        experience_pool = get_experience_pool()
+        
         try:
             # Schema Linking
             relevant_schema = get_relevant_schema(task)
@@ -439,21 +442,106 @@ class NL2SQLAgent:
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             sql = sanitize_sql(response.content.strip())
             
-            # 添加店铺过滤
+            # SQL 语法验证
+            is_valid_syntax, syntax_error = await self._validate_sql_syntax(sql)
+            if not is_valid_syntax:
+                print(f"[NL2SQLAgent:Single] SQL 语法验证失败: {syntax_error}")
+                # 尝试修复语法错误
+                sql = await self._repair_sql(task, sql, syntax_error, relevant_schema)
+            
+            # MySQL 规则验证
+            is_valid_mysql, mysql_error = await self._validate_mysql_rules(sql)
+            if not is_valid_mysql:
+                print(f"[NL2SQLAgent:Single] MySQL 规则验证失败: {mysql_error}")
+                # 尝试修复
+                sql = await self._repair_sql(task, sql, mysql_error, relevant_schema)
+            
+            # 安全校验
+            is_safe, message = validate_sql(sql)
+            if not is_safe:
+                return AgentResult(
+                    agent=AgentType.NL2SQL,
+                    result="",
+                    confidence=0.0,
+                    success=False,
+                    error=f"SQL校验失败: {message}"
+                )
+            
+            # 添加店铺过滤和限制
             sql = add_shop_filter(sql, context.shop_id)
             sql = add_limit(sql)
             
-            # 执行
-            results = await asyncio.to_thread(execute_sql_with_retry, sql)
-            formatted = format_results_for_llm(results)
+            # 执行 SQL（带自动修复）
+            last_error = None
+            current_sql = sql
             
+            for attempt in range(max_retries):
+                try:
+                    results = await asyncio.to_thread(execute_sql_with_retry, current_sql)
+                    formatted = format_results_for_llm(results)
+                    
+                    # 成功:记录到经验池
+                    solving_process = [
+                        {"step": 1, "description": "Schema Linking", "detail": "识别相关表和列"},
+                        {"step": 2, "description": "Few-shot 检索", "detail": "检索相似 SQL 样例"},
+                        {"step": 3, "description": "LLM 生成 SQL", "detail": "生成初始 SQL"},
+                        {"step": 4, "description": "SQL 执行", "detail": "执行并返回结果"},
+                    ]
+                    await experience_pool.record_success(
+                        agent_type="nl2sql",
+                        question=task,
+                        solution=current_sql,
+                        result_summary=formatted[:200],
+                        solving_process=solving_process,
+                    )
+                    
+                    return AgentResult(
+                        agent=AgentType.NL2SQL,
+                        result=formatted,
+                        confidence=0.9,
+                        metadata={"sql": current_sql, "attempts": attempt + 1}
+                    )
+                except Exception as sql_error:
+                    last_error = sql_error
+                    print(f"[NL2SQLAgent:Single] 第 {attempt + 1} 次执行失败: {str(sql_error)}")
+                    
+                    if attempt < max_retries - 1:
+                        # 尝试修复 SQL
+                        fixed_sql = await self._repair_sql(task, current_sql, str(sql_error), relevant_schema)
+                        
+                        # 记录失败+修复案例
+                        await experience_pool.record_failure_and_fix(
+                            agent_type="nl2sql",
+                            question=task,
+                            error=str(sql_error),
+                            original_solution=current_sql,
+                            fixed_solution=fixed_sql,
+                        )
+                        
+                        current_sql = fixed_sql
+                        # 重新添加店铺过滤和限制
+                        current_sql = add_shop_filter(current_sql, context.shop_id)
+                        current_sql = add_limit(current_sql)
+            
+            # 所有重试都失败
             return AgentResult(
                 agent=AgentType.NL2SQL,
-                result=formatted,
-                confidence=0.9,
-                metadata={"sql": sql}
+                result="",
+                confidence=0.0,
+                success=False,
+                error=str(last_error)
             )
         except Exception as e:
+            print(f"[NL2SQLAgent:Single] 执行失败: {str(e)}")
+            
+            # 记录失败案例
+            await experience_pool.record_failure_and_fix(
+                agent_type="nl2sql",
+                question=task,
+                error=str(e),
+                original_solution="",
+            )
+            
             return AgentResult(
                 agent=AgentType.NL2SQL,
                 result="",

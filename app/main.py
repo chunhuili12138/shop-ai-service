@@ -161,9 +161,9 @@ app.include_router(file_router, tags=["文件上传"])
 # 静态文件服务（上传文件）
 from fastapi.staticfiles import StaticFiles
 import os
-UPLOAD_DIR = "C:/shop-operate/uploads"
-if os.path.exists(UPLOAD_DIR):
-    app.mount("/file/upload", StaticFiles(directory=UPLOAD_DIR), name="uploads")
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "uploads")
+os.makedirs(UPLOAD_DIR, exist_ok=True)
+app.mount("/file/upload", StaticFiles(directory=UPLOAD_DIR), name="uploads")
 
 
 @app.get("/")

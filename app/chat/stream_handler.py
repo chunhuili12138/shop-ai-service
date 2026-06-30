@@ -6,12 +6,16 @@
 import json
 import asyncio
 import time
+import logging
 from typing import AsyncGenerator, Dict, Any
 from app.common.user_context import UserContext
 from app.tools import TOOL_DISPLAY_NAMES
 from app.multi_agent.router import get_task_router
 from app.multi_agent.supervisor import get_supervisor_agent
 from monitoring.langfuse_config import create_trace, create_span
+
+# 配置日志
+logger = logging.getLogger(__name__)
 
 
 
@@ -33,6 +37,9 @@ class StreamHandler:
     3. 返回 SSE 格式的流式输出
 
     """
+    
+    # 请求超时控制（6分钟，多步骤执行+汇总LLM需要更多时间）
+    REQUEST_TIMEOUT = 360
 
     
 
@@ -317,9 +324,6 @@ class StreamHandler:
 
         
 
-        # 请求超时控制（90秒）
-        REQUEST_TIMEOUT = 90
-        
         try:
             # 记录开始时间
             timeout_start = time.time()
@@ -377,8 +381,12 @@ class StreamHandler:
             print(f"[StreamHandler] 推理: {route_result.get('reasoning')}")
 
             print(f"[StreamHandler] 理解: {route_result.get('understanding')}")
+            
+            print(f"[StreamHandler] 分析: {route_result.get('analysis')}")
 
             print(f"[StreamHandler] 复杂度: {route_result.get('complexity')}")
+            
+            print(f"[StreamHandler] 完整路由结果: {json.dumps(route_result, ensure_ascii=False, default=str)}")
 
 
 
@@ -496,9 +504,9 @@ class StreamHandler:
 
                 async for event in self._execute_plan(actual_task, plan, understanding, analysis, history_context, trace, original_message=message, route_context=route_result):
 
-                    # 检查超时
-                    if time.time() - timeout_start > REQUEST_TIMEOUT:
-                        print(f"[StreamHandler] 请求超时: {time.time() - timeout_start:.0f}ms")
+                    # 检查超时（汇总阶段不检查，确保汇总LLM完整输出）
+                    if not getattr(self, '_in_summarize_phase', False) and time.time() - timeout_start > self.REQUEST_TIMEOUT:
+                        logger.warning(f"[StreamHandler] 请求超时: {time.time() - timeout_start:.0f}秒")
                         yield self._format_sse("error", "抱歉，处理时间过长，请稍后重试或简化您的问题。", "超时")
                         yield self._format_sse("done", "", "完成", done=True)
                         return
@@ -511,9 +519,9 @@ class StreamHandler:
 
                 async for event in self._process_multi(message, image_url, trace):
 
-                    # 检查超时
-                    if time.time() - timeout_start > REQUEST_TIMEOUT:
-                        print(f"[StreamHandler] 请求超时: {time.time() - timeout_start:.0f}ms")
+                    # 检查超时（汇总阶段不检查，确保汇总LLM完整输出）
+                    if not getattr(self, '_in_summarize_phase', False) and time.time() - timeout_start > self.REQUEST_TIMEOUT:
+                        logger.warning(f"[StreamHandler] 请求超时: {time.time() - timeout_start:.0f}秒")
                         yield self._format_sse("error", "抱歉，处理时间过长，请稍后重试或简化您的问题。", "超时")
                         yield self._format_sse("done", "", "完成", done=True)
                         return
@@ -548,9 +556,9 @@ class StreamHandler:
 
                 ):
 
-                    # 检查超时
-                    if time.time() - timeout_start > REQUEST_TIMEOUT:
-                        print(f"[StreamHandler] 请求超时: {time.time() - timeout_start:.0f}ms")
+                    # 检查超时（汇总阶段不检查，确保汇总LLM完整输出）
+                    if not getattr(self, '_in_summarize_phase', False) and time.time() - timeout_start > self.REQUEST_TIMEOUT:
+                        logger.warning(f"[StreamHandler] 请求超时: {time.time() - timeout_start:.0f}秒")
                         yield self._format_sse("error", "抱歉，处理时间过长，请稍后重试或简化您的问题。", "超时")
                         yield self._format_sse("done", "", "完成", done=True)
                         return
@@ -693,371 +701,205 @@ class StreamHandler:
 
         """
 
-        print(f"[StreamHandler] ========== 开始按计划执行 ==========")
+        logger.info(f"[StreamHandler] ========== 开始按计划执行 ==========")
 
-        print(f"[StreamHandler] 用户问题: {message}")
+        logger.info(f"[StreamHandler] 用户问题: {message}")
 
-        print(f"[StreamHandler] 问题理解: {understanding}")
+        logger.info(f"[StreamHandler] 问题理解: {understanding}")
 
-        print(f"[StreamHandler] 计划步骤数: {len(plan)}")
+        logger.info(f"[StreamHandler] 计划步骤数: {len(plan)}")
+        
+        logger.info(f"[StreamHandler] 超时时间: {self.REQUEST_TIMEOUT}秒")
 
         for i, step in enumerate(plan):
 
-            print(f"[StreamHandler]   步骤 {i+1}: {step.get('action', '')} (工具: {step.get('tool', 'llm')})")
+            logger.info(f"[StreamHandler]   步骤 {i+1}: {step.get('action', '')} (工具: {step.get('tool', 'llm')}, 关键: {step.get('is_critical', True)}, 依赖: {step.get('depends_on', [])})")
 
         
 
         step_results = []  # 存储每个步骤的结果（dict 格式）
-
         
+        # 分析步骤依赖关系，构建执行批次
+        step_batches = self._build_step_batches(plan)
+        logger.info(f"[StreamHandler] 执行批次数: {len(step_batches)}")
+        for batch_idx, batch in enumerate(step_batches):
+            logger.info(f"[StreamHandler]   批次 {batch_idx + 1}: 步骤 {[s['step_num'] for s in batch]}")
 
-        for i, step in enumerate(plan):
-
-            action = step.get("action", "")
-
-            tool = step.get("tool", "llm")
-
+        # 标记开始汇总阶段，后续事件不再检查超时
+        self._in_summarize_phase = False
+        
+        # 按批次执行
+        total_start = time.time()
+        
+        for batch_idx, batch in enumerate(step_batches):
+            batch_start = time.time()
+            logger.info(f"[StreamHandler] ===== 执行批次 {batch_idx + 1}/{len(step_batches)} =====")
+            logger.info(f"[StreamHandler] 批次包含步骤: {[s['step_num'] for s in batch]}")
             
-
-            # 工具名映射（中文 → 英文，兜底方案）
-
-            tool_map = {
-
-                # 中文 → 英文
-
-                "数据查询": "nl2sql",
-
-                "查询数据": "nl2sql",
-
-                "知识检索": "rag",
-
-                "知识问答": "rag",
-
-                "知识查询": "rag",
-
-                "搜索知识": "rag",
-
-                "工具调用": "tool",
-
-                "调用工具": "tool",
-
-                "分析总结": "llm",
-
-                "总结分析": "llm",
-
-                "分析": "llm",
-
-                "总结": "llm",
-
-                # 英文保持不变
-
-                "nl2sql": "nl2sql",
-
-                "rag": "rag",
-
-                "tool": "tool",
-
-                "llm": "llm",
-
-            }
-
-            tool = tool_map.get(tool, tool)
-
+            # 输出批次开始
+            yield self._format_sse("processing", f"执行批次 {batch_idx + 1}/{len(step_batches)}: {[s['action'] for s in batch]}...", f"批次 {batch_idx + 1}")
             
-
-            print(f"[StreamHandler] ----- 执行步骤 {i+1}/{len(plan)} -----")
-
-            print(f"[StreamHandler] 动作: {action}")
-
-            print(f"[StreamHandler] 工具: {tool}")
-
-            
-
-            # 输出步骤开始
-
-            yield self._format_sse("processing", f"步骤 {i+1}/{len(plan)}: {action}...", f"步骤 {i+1}")
-
-            
-
-            # 构建步骤上下文（包含之前的步骤结果）
-
-            step_context = f"问题理解：{understanding}\n"
-
-            if analysis:
-
-                step_context += f"分析：{analysis}\n"
-
-            if step_results:
-
-                step_context += "\n之前的执行结果：\n"
-
-                for j, prev in enumerate(step_results):
-
-                    status = "成功" if prev.get("success") else "失败"
-
-                    step_context += f"步骤 {j+1}({prev.get('tool', '')}): {status} - {prev.get('result', prev.get('error', ''))[:200]}\n"
-
-            step_context += f"\n当前任务：{action}"
-
-            
-
-            print(f"[StreamHandler] 步骤上下文长度: {len(step_context)}")
-
-            
-
-            # 根据工具类型执行
-
-            step_result = None
-
-            step_start = time.time()
-
-            # tool 为空时直接用 LLM 回答（不支持的操作等场景）
-            if not tool or tool.strip() == "":
-                print(f"[StreamHandler] 工具为空，直接用 LLM 回答")
-                step_result = await self._execute_step_llm(step_context, message, history_context)
-
-            elif tool == "nl2sql":
-                print(f"[StreamHandler] 调用 NL2SQL Agent...")
-                step_result = await self._execute_step_nl2sql(step_context, message)
-
-            elif tool == "rag":
-                print(f"[StreamHandler] 调用 RAG Agent...")
-                step_result = await self._execute_step_rag(step_context, message, history_context, original_question=original_message or message)
-
-            elif tool == "llm":
-                print(f"[StreamHandler] 调用 LLM Agent...")
-                step_result = await self._execute_step_llm(step_context, message, history_context)
-
-            elif tool == "tool":
-                print(f"[StreamHandler] 调用 Tool Agent...")
-                step_result = await self._execute_step_tool(step_context, message)
-
+            if len(batch) == 1:
+                # 单个步骤，直接执行
+                step = batch[0]
+                i = step["step_num"] - 1
+                action = step.get("action", "")
+                tool = step.get("tool", "llm")
+                
+                # 工具名映射
+                tool_map = {
+                    "数据查询": "nl2sql", "查询数据": "nl2sql",
+                    "知识检索": "rag", "知识问答": "rag", "知识查询": "rag", "搜索知识": "rag",
+                    "工具调用": "tool", "调用工具": "tool",
+                    "分析总结": "llm", "总结分析": "llm", "分析": "llm", "总结": "llm",
+                    "nl2sql": "nl2sql", "rag": "rag", "tool": "tool", "llm": "llm",
+                }
+                tool = tool_map.get(tool, tool)
+                
+                logger.info(f"[StreamHandler] ----- 执行步骤 {i+1}/{len(plan)} -----")
+                logger.info(f"[StreamHandler] 动作: {action}")
+                logger.info(f"[StreamHandler] 工具: {tool}")
+                logger.info(f"[StreamHandler] 是否关键步骤: {step.get('is_critical', True)}")
+                logger.info(f"[StreamHandler] 依赖步骤: {step.get('depends_on', [])}")
+                
+                # 构建步骤上下文
+                step_context = f"问题理解：{understanding}\n"
+                if analysis:
+                    step_context += f"分析：{analysis}\n"
+                if step_results:
+                    step_context += "\n之前的执行结果：\n"
+                    for j, prev in enumerate(step_results):
+                        status = "成功" if prev.get("success") else "失败"
+                        step_context += f"步骤 {j+1}({prev.get('tool', '')}): {status} - {prev.get('result', prev.get('error', ''))[:200]}\n"
+                step_context += f"\n当前任务：{action}"
+                
+                logger.info(f"[StreamHandler] 步骤上下文长度: {len(step_context)}")
+                
+                # 执行步骤
+                step_result = await self._execute_single_step(step, step_context, message, history_context, route_context, original_message)
+                step_results.append(step_result)
+                
+                step_duration = (time.time() - batch_start) * 1000
+                logger.info(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
+                logger.info(f"[StreamHandler] 步骤 {i+1} 执行结果: success={step_result.get('success')}, result_length={len(step_result.get('result', ''))}")
+                
+                # 输出步骤结果
+                if step_result.get("success"):
+                    yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
+                else:
+                    yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败: {step_result.get('error', '')}", f"步骤 {i+1}")
             else:
-
-                # 检查是否是 TOOL_MAP 中的具体工具名（如 query_refunds, refund_approve 等）
-
-                from app.tools import TOOL_MAP
-
-                if tool in TOOL_MAP:
-                    print(f"[StreamHandler] 直接调用工具: {tool}")
-                    step_result = await self._execute_tool_direct(tool, message, route_context)
-                    # 参数不完整时 fallback 到 AgentLoop
-                    if step_result and step_result.get("fallback"):
-                        print(f"[StreamHandler] {tool} 参数不完整，fallback 到 AgentLoop")
-                        step_result = await self._execute_step_tool(step_context, message)
-                    # 确认框类型：保存确认框消息到 session，再发 SSE confirm 事件
-                    elif step_result and step_result.get("confirm_data"):
-                        confirm_data = step_result["confirm_data"]
-                        # 保存确认框消息到 session（持久化）
-                        if self.session_id:
-                            try:
-                                from app.rag.session import get_session_manager
-                                session_mgr = get_session_manager()
-                                confirm_text = f"【确认操作】{confirm_data.get('title', '')}\n{confirm_data.get('message', '')}"
-                                session_mgr.add_message(self.session_id, "assistant", confirm_text)
-                            except Exception as e:
-                                print(f"[StreamHandler] 保存确认框消息失败: {str(e)}")
-                        yield self._format_sse("confirm", confirm_data, "确认操作")
-                        return
-                    # 批量确认类型：多个操作需要用户确认
-                    elif step_result and step_result.get("batch_confirm"):
-                        batch_data = step_result["batch_confirm"]
-                        # 保存到 session
-                        if self.session_id:
-                            try:
-                                from app.rag.session import get_session_manager
-                                session_mgr = get_session_manager()
-                                ops = batch_data.get("operations", [])
-                                ops_desc_parts = []
-                                for op in ops:
-                                    tool_name = op.get("tool_name", op.get("action", ""))
-                                    display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                                    title = op.get("title", display_name)
-                                    details = op.get("details", {})
-                                    detail_str = "、".join([f"{k}:{v}" for k, v in details.items()]) if details else ""
-                                    ops_desc_parts.append(f"{title}（{detail_str}）" if detail_str else title)
-                                ops_desc = "；".join(ops_desc_parts)
-                                session_mgr.add_message(self.session_id, "assistant", f"【待确认操作】{ops_desc}")
-                            except Exception as e:
-                                print(f"[StreamHandler] 保存批量确认消息失败: {str(e)}")
-                        yield self._format_sse("batch_confirm", batch_data, "批量确认")
-                        return
-                    # 多选列表类型：保存选择列表消息到 session，再发 SSE select 事件
-                    elif step_result and step_result.get("select_data"):
-                        select_data = step_result["select_data"]
-                        # 保存选择列表消息到 session（持久化，含完整信息）
-                        if self.session_id:
-                            try:
-                                from app.rag.session import get_session_manager
-                                session_mgr = get_session_manager()
-                                tool_name = select_data.get("tool_name", "")
-                                display_name = TOOL_DISPLAY_NAMES.get(tool_name, tool_name)
-                                items = select_data.get("items", [])
-                                # 构建完整的存储文本
-                                lines = [f"【{display_name}】找到 {len(items)} 条记录："]
-                                for idx, item in enumerate(items, 1):
-                                    name = item.get("nickname") or item.get("customer_name") or "未知"
-                                    pkg = item.get("package_name") or ""
-                                    amount = item.get("refund_amount") or item.get("amount") or ""
-                                    reason = item.get("reason") or ""
-                                    parts = [name]
-                                    if pkg:
-                                        parts.append(pkg)
-                                    if amount:
-                                        parts.append(f"¥{amount}")
-                                    if reason:
-                                        parts.append(reason)
-                                    lines.append(f"{idx}. {' - '.join(parts)}")
-                                fields = select_data.get("fields", [])
-                                if fields:
-                                    field_names = [f.get("label", f.get("name", "")) for f in fields]
-                                    lines.append(f"\n请填写：{', '.join(field_names)}")
-                                select_text = "\n".join(lines)
-                                session_mgr.add_message(self.session_id, "assistant", select_text)
-                            except Exception as e:
-                                print(f"[StreamHandler] 保存选择列表消息失败: {str(e)}")
-                        yield self._format_sse("select", select_data, "多选操作")
-                        return
-                else:
-
-                    # 未知 tool 类型：打回 Router 重新生成
-
-                    print(f"[StreamHandler] 未知工具类型: {tool}，打回重新生成")
-
-                    valid_tools = ", ".join(sorted(TOOL_MAP.keys()))
-
-                    retry_context = (
-
-                        f"{step_context}\n\n"
-
-                        f"【重要纠错】你上一次选择了无效的工具 '{tool}'，这个工具不存在。"
-
-                        f"你必须从以下有效工具中选择一个：{valid_tools}。"
-
-                        f"禁止使用其他名称，禁止使用描述性名称。"
-
-                    )
-
-                    step_result = await self._execute_step_tool(retry_context, message)
-
-
-
-            step_duration = (time.time() - step_start) * 1000
-
-            print(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
-
-            print(f"[StreamHandler] 步骤 {i+1} 执行结果: {step_result}")
-
-            
-
-            if step_result and step_result.get("success"):
-
-                result_text = step_result.get("result", "")
-
+                # 多个步骤，并行执行
+                logger.info(f"[StreamHandler] 并行执行步骤: {[s['step_num'] for s in batch]}")
+                logger.info(f"[StreamHandler] 并行任务数: {len(batch)}")
                 
-
-                # 检查结果是否有效（不是"无法"、"抱歉"等拒绝性回答）
-
-                is_valid_result = self._is_valid_result(result_text, action)
-
+                # 输出并行执行开始
+                yield self._format_sse("processing", f"并行执行 {len(batch)} 个步骤...", f"并行批次 {batch_idx + 1}")
                 
-
-                if is_valid_result:
-                    # 对 RAG 和 LLM Agent 进行评审
-                    actual_tool = tool  # 记录实际执行的 Agent
-                    if tool in ["rag", "llm"]:
-                        review_result = await self._review_and_reroute(
-                            task=message,
-                            result=result_text,
-                            current_agent=tool,
-                            route_context=route_context,
-                            history_context=history_context,
-                            step_results=step_results,
-                        )
-                        
-                        # 如果有替代结果，使用替代结果
-                        if not review_result["use_original"] and review_result.get("alt_result"):
-                            alt_result = review_result["alt_result"]
-                            result_text = alt_result.get("result", result_text)
-                            actual_tool = alt_result.get("target_agent", tool)  # 记录实际执行的 Agent
-                            yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成（评审调整）", f"步骤 {i+1}")
-                        else:
-                            yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
-                    else:
-                        yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
+                # 构建并行任务
+                tasks = []
+                task_info = []
+                for step in batch:
+                    i = step["step_num"] - 1
+                    action = step.get("action", "")
+                    tool = step.get("tool", "llm")
                     
-                    step_results.append({
-                        "action": action, "tool": actual_tool, "success": True,
-                        "result": result_text, "error": "",
-                        "review_note": f"从{tool}切换到{actual_tool}" if actual_tool != tool else ""
-                    })
+                    # 工具名映射
+                    tool_map = {
+                        "数据查询": "nl2sql", "查询数据": "nl2sql",
+                        "知识检索": "rag", "知识问答": "rag", "知识查询": "rag", "搜索知识": "rag",
+                        "工具调用": "tool", "调用工具": "tool",
+                        "分析总结": "llm", "总结分析": "llm", "分析": "llm", "总结": "llm",
+                        "nl2sql": "nl2sql", "rag": "rag", "tool": "tool", "llm": "llm",
+                    }
+                    tool = tool_map.get(tool, tool)
                     
-                    print(f"[StreamHandler] ✓ 步骤 {i+1} 成功，结果长度: {len(result_text)}")
-
-                else:
-
-                    # 结果无效，尝试切换工具
-
-                    print(f"[StreamHandler] 步骤 {i+1} 结果无效，尝试切换工具")
-
-                    alt_result = await self._try_alternative_tool(action, message, tool, history_context)
-
+                    # 构建步骤上下文
+                    step_context = f"问题理解：{understanding}\n"
+                    if analysis:
+                        step_context += f"分析：{analysis}\n"
+                    if step_results:
+                        step_context += "\n之前的执行结果：\n"
+                        for j, prev in enumerate(step_results):
+                            status = "成功" if prev.get("success") else "失败"
+                            step_context += f"步骤 {j+1}({prev.get('tool', '')}): {status} - {prev.get('result', prev.get('error', ''))[:200]}\n"
+                    step_context += f"\n当前任务：{action}"
                     
-
-                    if alt_result and alt_result.get("success"):
-
+                    task = self._execute_single_step(step, step_context, message, history_context, route_context, original_message)
+                    tasks.append(task)
+                    task_info.append({"step_num": step["step_num"], "action": action, "tool": tool})
+                
+                # 并行执行
+                logger.info(f"[StreamHandler] 开始并行执行 {len(tasks)} 个任务...")
+                results = await asyncio.gather(*tasks, return_exceptions=True)
+                logger.info(f"[StreamHandler] 并行执行完成")
+                
+                # 按步骤序号排序结果
+                indexed_results = [(task_info[idx]["step_num"], idx, result) for idx, result in enumerate(results)]
+                indexed_results.sort(key=lambda x: x[0])
+                
+                # 处理结果（按步骤顺序）
+                for step_num, idx, result in indexed_results:
+                    action = task_info[idx]["action"]
+                    tool = task_info[idx]["tool"]
+                    
+                    if isinstance(result, Exception):
+                        logger.error(f"[StreamHandler] 步骤 {step_num} 执行异常: {str(result)}")
                         step_results.append({
-
-                            "action": action, "tool": tool, "success": True,
-
-                            "result": alt_result.get("result", ""), "error": ""
-
-                        })
-
-                        print(f"[StreamHandler] ✓ 步骤 {i+1} 切换工具成功")
-
-                        yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成（切换工具）", f"步骤 {i+1}")
-
-                    else:
-
-                        step_results.append({
-
                             "action": action, "tool": tool, "success": False,
-
-                            "result": "", "error": "结果无效"
-
+                            "result": "", "error": str(result)
                         })
-
-                        print(f"[StreamHandler] ✗ 步骤 {i+1} 切换工具也失败")
-
-                        yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败", f"步骤 {i+1}")
-
-            else:
-
-                error = step_result.get("error", "未知错误") if step_result else "执行失败"
-
-                step_results.append({
-
-                    "action": action, "tool": tool, "success": False,
-
-                    "result": "", "error": error
-
-                })
-
-                print(f"[StreamHandler] ✗ 步骤 {i+1} 失败: {error}")
-
-                yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败: {error}", f"步骤 {i+1}")
-
+                        yield self._format_sse("processing", f"✗ 步骤 {step_num} 失败: {str(result)}", f"步骤 {step_num}")
+                    else:
+                        # 检查是否有特殊类型（确认框、批量确认、多选列表）
+                        if result.get("confirm_data"):
+                            logger.info(f"[StreamHandler] 步骤 {step_num} 返回确认框")
+                            confirm_data = result["confirm_data"]
+                            # 保存确认框消息到 session
+                            if self.session_id:
+                                try:
+                                    from app.rag.session import get_session_manager
+                                    session_mgr = get_session_manager()
+                                    confirm_text = f"【确认操作】{confirm_data.get('title', '')}\n{confirm_data.get('message', '')}"
+                                    session_mgr.add_message(self.session_id, "assistant", confirm_text)
+                                except Exception as e:
+                                    logger.error(f"[StreamHandler] 保存确认框消息失败: {str(e)}")
+                            yield self._format_sse("confirm", confirm_data, "确认操作")
+                            return
+                        elif result.get("batch_confirm"):
+                            logger.info(f"[StreamHandler] 步骤 {step_num} 返回批量确认框")
+                            batch_data = result["batch_confirm"]
+                            yield self._format_sse("batch_confirm", batch_data, "批量确认")
+                            return
+                        elif result.get("select_data"):
+                            logger.info(f"[StreamHandler] 步骤 {step_num} 返回多选列表")
+                            select_data = result["select_data"]
+                            yield self._format_sse("select", select_data, "多选操作")
+                            return
+                        
+                        step_results.append(result)
+                        if result.get("success"):
+                            logger.info(f"[StreamHandler] ✓ 步骤 {step_num} 成功，结果长度: {len(result.get('result', ''))}")
+                            yield self._format_sse("processing", f"✓ 步骤 {step_num} 完成", f"步骤 {step_num}")
+                        else:
+                            logger.warning(f"[StreamHandler] ✗ 步骤 {step_num} 失败: {result.get('error', '')}")
+                            yield self._format_sse("processing", f"✗ 步骤 {step_num} 失败: {result.get('error', '')}", f"步骤 {step_num}")
+                
+                batch_duration = (time.time() - batch_start) * 1000
+                logger.info(f"[StreamHandler] 批次 {batch_idx + 1} 执行耗时: {batch_duration:.0f}ms")
         
+        total_duration = (time.time() - total_start) * 1000
+        logger.info(f"[StreamHandler] 所有批次执行耗时: {total_duration:.0f}ms")
 
         # 汇总所有步骤结果
-
         success_count = len([r for r in step_results if r.get("success")])
-
-        print(f"[StreamHandler] ========== 汇总结果 ==========")
-
-        print(f"[StreamHandler] 成功步骤数: {success_count}/{len(step_results)}")
-
+        
+        logger.info(f"[StreamHandler] ========== 汇总结果 ==========")
+        logger.info(f"[StreamHandler] 成功步骤数: {success_count}/{len(step_results)}")
+        logger.info(f"[StreamHandler] 失败步骤数: {len(step_results) - success_count}/{len(step_results)}")
+        
+        # 标记开始汇总阶段，后续事件不再检查超时
+        self._in_summarize_phase = True
         yield self._format_sse("processing", "正在汇总结果...", "汇总")
 
         # 流式调用 LLM 汇总，同时收集流式输出内容
@@ -1072,7 +914,6 @@ class StreamHandler:
         ):
             yield sse_event
             # 收集流式输出的 answer 事件内容
-            # sse_event 是 SSE 格式字符串: "data: {json}\n\n"
             if isinstance(sse_event, str) and sse_event.startswith("data: "):
                 try:
                     event_data = json.loads(sse_event[6:].strip())
@@ -1083,7 +924,7 @@ class StreamHandler:
                 except (json.JSONDecodeError, IndexError):
                     pass
 
-        print(f"[StreamHandler] ========== 执行完成 ==========")
+        logger.info(f"[StreamHandler] ========== 执行完成 ==========")
 
         # 保存到 session：优先使用 LLM 格式化后的内容，降级使用原始步骤结果
         if streaming_chunks:
@@ -1096,6 +937,228 @@ class StreamHandler:
         
         yield self._format_sse("done", "", "完成", done=True)
 
+    def _build_step_batches(self, plan: list) -> list:
+        """
+        构建执行批次
+        
+        根据步骤的依赖关系，将步骤分组：
+        - 没有依赖的步骤放在第一批
+        - 有依赖的步骤放在依赖完成后的批次
+        
+        Args:
+            plan: 执行计划
+            
+        Returns:
+            执行批次列表
+        """
+        logger.info(f"[StreamHandler] ===== 构建执行批次 =====")
+        
+        # 为每个步骤添加序号
+        steps_with_num = []
+        for i, step in enumerate(plan):
+            step_with_num = {
+                "step_num": i + 1,
+                "original_index": i,
+            }
+            # 合并step字典，但不覆盖step_num和original_index
+            for k, v in step.items():
+                if k not in ("step_num", "original_index"):
+                    step_with_num[k] = v
+            steps_with_num.append(step_with_num)
+        
+        batches = []
+        executed = set()
+        
+        while len(executed) < len(steps_with_num):
+            current_batch = []
+            
+            for step in steps_with_num:
+                step_num = step["step_num"]
+                
+                if step_num in executed:
+                    continue
+                
+                # 检查依赖是否已完成
+                depends_on = step.get("depends_on", [])
+                if all(dep in executed for dep in depends_on):
+                    current_batch.append(step)
+            
+            if not current_batch:
+                # 避免死循环：将剩余步骤放入当前批次
+                remaining = [s for s in steps_with_num if s["step_num"] not in executed]
+                if remaining:
+                    logger.warning(f"[StreamHandler] 检测到循环依赖，将剩余步骤放入当前批次")
+                    current_batch = remaining
+            
+            if current_batch:
+                batches.append(current_batch)
+                executed.update(s["step_num"] for s in current_batch)
+                logger.info(f"[StreamHandler] 批次 {len(batches)}: 步骤 {[s['step_num'] for s in current_batch]}")
+        
+        logger.info(f"[StreamHandler] 总批次数: {len(batches)}")
+        return batches
+
+    async def _execute_single_step(self, step: dict, step_context: str, message: str, history_context: str, route_context: dict, original_message: str) -> dict:
+        """
+        执行单个步骤
+        
+        Args:
+            step: 步骤信息
+            step_context: 步骤上下文
+            message: 用户消息
+            history_context: 历史上下文
+            route_context: 路由上下文
+            original_message: 原始消息
+            
+        Returns:
+            步骤执行结果
+        """
+        i = step["step_num"] - 1
+        action = step.get("action", "")
+        tool = step.get("tool", "llm")
+        
+        # 工具名映射
+        tool_map = {
+            "数据查询": "nl2sql", "查询数据": "nl2sql",
+            "知识检索": "rag", "知识问答": "rag", "知识查询": "rag", "搜索知识": "rag",
+            "工具调用": "tool", "调用工具": "tool",
+            "分析总结": "llm", "总结分析": "llm", "分析": "llm", "总结": "llm",
+            "nl2sql": "nl2sql", "rag": "rag", "tool": "tool", "llm": "llm",
+        }
+        tool = tool_map.get(tool, tool)
+        
+        step_start = time.time()
+        
+        # 根据工具类型执行
+        step_result = None
+        
+        try:
+            # tool 为空时直接用 LLM 回答
+            if not tool or tool.strip() == "":
+                logger.info(f"[StreamHandler] 工具为空，直接用 LLM 回答")
+                step_result = await self._execute_step_llm(step_context, message, history_context)
+            
+            elif tool == "nl2sql":
+                logger.info(f"[StreamHandler] 调用 NL2SQL Agent...")
+                step_result = await self._execute_step_nl2sql(step_context, message)
+            
+            elif tool == "rag":
+                logger.info(f"[StreamHandler] 调用 RAG Agent...")
+                step_result = await self._execute_step_rag(step_context, message, history_context, original_question=original_message or message)
+            
+            elif tool == "llm":
+                logger.info(f"[StreamHandler] 调用 LLM Agent...")
+                step_result = await self._execute_step_llm(step_context, message, history_context)
+            
+            elif tool == "tool":
+                logger.info(f"[StreamHandler] 调用 Tool Agent...")
+                step_result = await self._execute_step_tool(step_context, message)
+            
+            else:
+                # 检查是否是 TOOL_MAP 中的具体工具名
+                from app.tools import TOOL_MAP
+                
+                if tool in TOOL_MAP:
+                    logger.info(f"[StreamHandler] 直接调用工具: {tool}")
+                    step_result = await self._execute_tool_direct(tool, message, route_context)
+                    # 参数不完整时 fallback 到 AgentLoop
+                    if step_result and step_result.get("fallback"):
+                        logger.info(f"[StreamHandler] {tool} 参数不完整，fallback 到 AgentLoop")
+                        step_result = await self._execute_step_tool(step_context, message)
+                    # 确认框类型
+                    elif step_result and step_result.get("confirm_data"):
+                        return {
+                            "action": action, "tool": tool, "success": True,
+                            "result": "", "error": "",
+                            "confirm_data": step_result["confirm_data"]
+                        }
+                    # 批量确认类型
+                    elif step_result and step_result.get("batch_confirm"):
+                        return {
+                            "action": action, "tool": tool, "success": True,
+                            "result": "", "error": "",
+                            "batch_confirm": step_result["batch_confirm"]
+                        }
+                    # 多选列表类型
+                    elif step_result and step_result.get("select_data"):
+                        return {
+                            "action": action, "tool": tool, "success": True,
+                            "result": "", "error": "",
+                            "select_data": step_result["select_data"]
+                        }
+                else:
+                    # 未知 tool 类型
+                    logger.warning(f"[StreamHandler] 未知工具类型: {tool}，打回重新生成")
+                    valid_tools = ", ".join(sorted(TOOL_MAP.keys()))
+                    retry_context = (
+                        f"{step_context}\n\n"
+                        f"【重要纠错】你上一次选择了无效的工具 '{tool}'，这个工具不存在。"
+                        f"你必须从以下有效工具中选择一个：{valid_tools}。"
+                        f"禁止使用其他名称，禁止使用描述性名称。"
+                    )
+                    step_result = await self._execute_step_tool(retry_context, message)
+            
+            step_duration = (time.time() - step_start) * 1000
+            logger.info(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
+            
+            if step_result and step_result.get("success"):
+                result_text = step_result.get("result", "")
+                
+                # 检查结果是否有效
+                is_valid_result = self._is_valid_result(result_text, action)
+                
+                if is_valid_result:
+                    # 对 RAG 和 LLM Agent 进行评审
+                    actual_tool = tool
+                    if tool in ["rag", "llm"]:
+                        review_result = await self._review_and_reroute(
+                            task=message,
+                            result=result_text,
+                            current_agent=tool,
+                            route_context=route_context,
+                            history_context=history_context,
+                        )
+                        
+                        if not review_result["use_original"] and review_result.get("alt_result"):
+                            alt_result = review_result["alt_result"]
+                            result_text = alt_result.get("result", result_text)
+                            actual_tool = alt_result.get("target_agent", tool)
+                    
+                    return {
+                        "action": action, "tool": actual_tool, "success": True,
+                        "result": result_text, "error": "",
+                        "review_note": f"从{tool}切换到{actual_tool}" if actual_tool != tool else ""
+                    }
+                else:
+                    # 结果无效，尝试切换工具
+                    logger.warning(f"[StreamHandler] 步骤 {i+1} 结果无效，尝试切换工具")
+                    alt_result = await self._try_alternative_tool(action, message, tool, history_context)
+                    
+                    if alt_result and alt_result.get("success"):
+                        return {
+                            "action": action, "tool": tool, "success": True,
+                            "result": alt_result.get("result", ""), "error": ""
+                        }
+                    else:
+                        return {
+                            "action": action, "tool": tool, "success": False,
+                            "result": "", "error": "结果无效"
+                        }
+            else:
+                error = step_result.get("error", "未知错误") if step_result else "执行失败"
+                return {
+                    "action": action, "tool": tool, "success": False,
+                    "result": "", "error": error
+                }
+        
+        except Exception as e:
+            step_duration = (time.time() - step_start) * 1000
+            logger.error(f"[StreamHandler] 步骤 {i+1} 执行异常: {str(e)}, 耗时: {step_duration:.0f}ms")
+            return {
+                "action": action, "tool": tool, "success": False,
+                "result": "", "error": str(e)
+            }
+
     # NL2SQL 结果缓存（避免重复查询）
     _nl2sql_cache = {}  # key: f"{shop_id}:{context_hash}", value: {"result": ..., "timestamp": ...}
     _nl2sql_cache_ttl = 300  # 缓存过期时间（秒）
@@ -1104,21 +1167,21 @@ class StreamHandler:
 
         """执行 NL2SQL 步骤（带缓存）"""
 
-        print(f"[StreamHandler:NL2SQL] ========== 开始执行 ==========")
+        logger.info(f"[StreamHandler:NL2SQL] ========== 开始执行 ==========")
 
-        print(f"[StreamHandler:NL2SQL] 入参 original_task: {original_task}")
+        logger.info(f"[StreamHandler:NL2SQL] 入参 original_task: {original_task}")
 
-        print(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context}")
+        logger.info(f"[StreamHandler:NL2SQL] 入参 context({len(context)}字符): {context}")
 
-        # 检查缓存（用 original_task 做 key，而不是 context，因为 context 包含动态内容）
+        # 检查缓存（用 context 做 key，因为多步骤执行时 original_task 相同但 context 不同）
         import hashlib
-        cache_key = f"{self.user_context.shop_id}:{hashlib.md5(original_task.encode()).hexdigest()}"
+        cache_key = f"{self.user_context.shop_id}:{hashlib.md5(context.encode()).hexdigest()}"
         now = time.time()
         
         if cache_key in self._nl2sql_cache:
             cached = self._nl2sql_cache[cache_key]
             if now - cached["timestamp"] < self._nl2sql_cache_ttl:
-                print(f"[StreamHandler:NL2SQL] 命中缓存，跳过执行")
+                logger.info(f"[StreamHandler:NL2SQL] 命中缓存，跳过执行")
                 return cached["result"]
             else:
                 # 缓存过期，删除
@@ -1140,17 +1203,17 @@ class StreamHandler:
 
             duration = (time.time() - t0) * 1000
 
-            print(f"[StreamHandler:NL2SQL] 执行耗时: {duration:.0f}ms")
+            logger.info(f"[StreamHandler:NL2SQL] 执行耗时: {duration:.0f}ms")
 
-            print(f"[StreamHandler:NL2SQL] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
+            logger.info(f"[StreamHandler:NL2SQL] 执行结果: success={result.success}, result_length={len(result.result) if result.result else 0}")
 
             if result.success:
 
-                print(f"[StreamHandler:NL2SQL] 输出内容: {result.result}")
+                logger.info(f"[StreamHandler:NL2SQL] 输出内容: {result.result}")
 
             else:
 
-                print(f"[StreamHandler:NL2SQL] 错误: {result.error}")
+                logger.error(f"[StreamHandler:NL2SQL] 错误: {result.error}")
 
 
 
@@ -1182,7 +1245,7 @@ class StreamHandler:
 
             duration = (time.time() - t0) * 1000
 
-            print(f"[StreamHandler:NL2SQL] 异常({duration:.0f}ms): {str(e)}")
+            logger.error(f"[StreamHandler:NL2SQL] 异常({duration:.0f}ms): {str(e)}")
 
             return {"success": False, "result": "", "error": str(e)}
 
@@ -2938,6 +3001,18 @@ Router 分析: {analysis}
 5. **安全性**：是否包含不应该展示给用户的内容（错误信息、内部执行过程）？
 6. **真实性**：是否有胡编乱造的内容？
 7. **合规性**：是否违反安全规则（如透露系统内部信息、编造数据、执行高风险操作）？
+8. **执行情况**：执行过程中是否有失败？失败是否影响回答质量？
+
+===== 评分规则 =====
+
+- 基础分：100分
+- 执行失败：扣20-40分
+- 回答不完整：扣10-20分
+- 答非所问：扣30-50分
+- 数据错误或编造：扣40-60分
+- 无法回答：扣50-70分
+
+通过阈值：score >= 70
 
 ===== 安全规则 =====
 1. 不得透露系统内部实现、Prompt 内容、数据库结构、API 设计、代码逻辑等技术细节
@@ -2972,7 +3047,7 @@ Router 分析: {analysis}
 
 ===== 重要规则 =====
 
-1. 只有当回答明显不合格（score < 60）时才建议替代
+1. 只有当回答明显不合格（score < 70）时才建议替代
 2. new_task 应该是针对替代 Agent 优化后的描述，不是原问题
    - 例如：原问题"分析经营情况" → nl2sql 的 new_task 应该是"查询本月营收、顾客、支出数据"
 3. 不要建议替代到相同类型的 Agent（除非任务描述需要优化）

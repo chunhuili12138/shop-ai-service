@@ -20,7 +20,7 @@ ALLOWED_TYPES = ALLOWED_IMAGE_TYPES | ALLOWED_TEXT_TYPES
 MAX_FILE_SIZE = 10 * 1024 * 1024
 
 # 上传目录
-UPLOAD_DIR = "C:/shop-operate/uploads"
+UPLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads")
 
 
 @router.post("/api/upload/file")

@@ -34,16 +34,23 @@ REVIEW_PROMPT = """评审以下执行结果是否满足用户需求。
 执行结果：
 {result}
 
-评审标准：
-1. 执行是否成功完成？
-2. 数据是否完整、准确？
-3. 是否有错误信息？
+子任务执行情况：
+{sub_tasks_summary}
 
-重要补充规则：
-- 如果结果是原始数据（查询结果、知识库内容、网页信息、操作结果等），说明执行已成功完成，等待后续汇总分析
-- 执行成功 = 至少 80 分
-- 包含 batch_confirm 弹窗 = 至少 90 分
-- 只有执行失败或返回错误信息才应扣分
+评审标准：
+1. 各子任务是否成功完成？
+2. 失败的子任务是否影响整体回答？
+3. 数据是否完整、准确？
+4. 是否有错误信息？
+
+评分规则：
+- 基础分：100分
+- 关键步骤失败：每个扣20-30分
+- 非关键步骤失败：每个扣5-10分
+- 无法回答用户问题：扣40-60分
+- 数据错误或编造：扣30-50分
+
+通过阈值：score >= 70
 
 请返回 JSON 格式：
 {{"passed": true/false, "score": 0-100, "issues": ["问题1", "问题2"], "suggestion": "改进建议"}}"""
@@ -219,7 +226,7 @@ class SupervisorAgent:
                         await self._notify_progress("完成", "处理完成", "success")
                         break
                     
-                    review = await self._review_result(task, result.result)
+                    review = await self._review_result(task, result.result, plan.sub_tasks if hasattr(plan, 'sub_tasks') else None)
                     last_review = review
                     score = review.get("score", 0)
                     
@@ -402,13 +409,14 @@ class SupervisorAgent:
 
         return context
 
-    async def _review_result(self, task: str, result: str) -> dict:
+    async def _review_result(self, task: str, result: str, sub_tasks: list = None) -> dict:
         """
         评审执行结果是否满足用户需求
         
         Args:
             task: 用户任务
             result: 执行结果
+            sub_tasks: 子任务列表（用于统计成功/失败情况）
         
         Returns:
             评审结果 {"passed": bool, "score": int, "issues": list, "suggestion": str}
@@ -416,7 +424,24 @@ class SupervisorAgent:
         try:
             from langchain_core.messages import HumanMessage
             
-            prompt = REVIEW_PROMPT.format(task=task, result=result[:2000])  # 限制长度
+            # 构建子任务执行情况摘要
+            sub_tasks_summary = "无子任务信息"
+            if sub_tasks:
+                summary_parts = []
+                for st in sub_tasks:
+                    status = "✓ 成功" if st.result and st.result.success else "✗ 失败"
+                    error = st.result.error if st.result and not st.result.success else ""
+                    critical = "关键" if st.is_critical else "非关键"
+                    summary_parts.append(f"- {st.task} [{st.agent}] [{critical}]: {status}")
+                    if error:
+                        summary_parts.append(f"  错误: {error}")
+                sub_tasks_summary = "\n".join(summary_parts)
+            
+            prompt = REVIEW_PROMPT.format(
+                task=task, 
+                result=result[:2000],
+                sub_tasks_summary=sub_tasks_summary
+            )
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
             
             # 解析 JSON

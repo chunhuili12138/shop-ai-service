@@ -267,11 +267,54 @@ plan 中每个步骤的 tool 字段决定了执行器如何调度，填写错误
 示例4 - 不支持的操作：
 {{"mode": "single", "agent": "llm", "reasoning": "删除数据不在系统能力范围", "understanding": "用户想删除顾客数据", "analysis": "不支持的操作", "plan": [{{"step": 1, "action": "告知用户不支持", "tool": "llm", "is_critical": true}}], "complexity": "simple"}}
 
-## 重要：输出格式要求
-1. 你必须只返回一个完整的 JSON 对象，不要包含任何其他文字、解释或 markdown 代码块标记（不要用 ```json ```）
-2. JSON 必须是有效的格式，所有字符串必须用双引号
-3. 不要在 JSON 前后添加任何文字
-4. 如果你不确定如何判断，也必须返回一个有效的 JSON（可以使用默认值）
+## 重要：输出格式要求（必须严格遵守，否则系统无法处理）
+
+### JSON格式规范：
+1. **只返回JSON**：你必须只返回一个完整的 JSON 对象，不要包含任何其他文字、解释或 markdown 代码块标记（不要用 ```json ```）
+2. **有效JSON格式**：JSON 必须是有效的格式，所有字符串必须用双引号（不要用单引号）
+3. **不要添加前缀**：不要在 JSON 前添加"以下是JSON："、"结果："等文字
+4. **不要添加后缀**：不要在 JSON 后添加解释说明
+5. **完整闭合**：确保所有括号、引号都正确闭合
+6. **无换行符**：JSON 内容不要包含实际的换行符（可以用 \n 转义）
+
+### 必须包含的字段：
+- "mode": 必须是 "single" 或 "multi"
+- "agent": 必须是 "rag"、"nl2sql"、"tool"、"llm"、"vision" 之一
+- "reasoning": 字符串，说明判断原因
+- "understanding": 字符串，说明用户意图
+- "analysis": 字符串，说明分析结果
+- "plan": 数组，每个元素包含 step、action、tool、is_critical
+- "complexity": 必须是 "simple"、"medium"、"complex" 之一
+
+### 常见错误示例（禁止）：
+❌ 错误1：添加了markdown标记
+```json
+{"mode": "single", ...}
+```
+
+❌ 错误2：添加了前缀文字
+以下是JSON：{"mode": "single", ...}
+
+❌ 错误3：使用了单引号
+{'mode': 'single', ...}
+
+❌ 错误4：JSON不完整
+{"mode": "single", "agent": "nl2sql"
+
+❌ 错误5：包含实际换行符
+{"mode": "single",
+"agent": "nl2sql"}
+
+### 正确示例（必须这样写）：
+✅ {"mode": "single", "agent": "nl2sql", "reasoning": "用户查询营业额", "understanding": "用户想查询本月营业额", "analysis": "查询purchases表", "plan": [{"step": 1, "action": "查询本月营业额", "tool": "nl2sql", "is_critical": true}], "complexity": "simple"}
+
+### 验证方法：
+在返回前，检查你的输出：
+1. 是否以 { 开头，以 } 结尾？
+2. 是否有 ```json ``` 标记？（不要有）
+3. 所有字符串是否用双引号？
+4. 所有括号是否正确闭合？
+5. 是否包含任何非JSON文字？（不要有）
 
 请直接返回 JSON："""
 
@@ -1567,6 +1610,7 @@ class TaskRouter:
             while not result and retry_count < max_retries:
                 retry_count += 1
                 print(f"[Router] JSON 解析失败，重试 {retry_count}/{max_retries}")
+                print(f"[Router] LLM返回内容({len(content)}字符): {content[:500]}...")
                 retry_prompt = prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字。"
                 response = await self.llm.ainvoke([HumanMessage(content=retry_prompt)])
                 content = response.content.strip()
@@ -1732,16 +1776,19 @@ class TaskRouter:
             
             # 解析响应（处理 markdown 代码块）
             content = response.content.strip()
+            print(f"[Router] LLM原始返回({len(content)}字符): {content[:300]}...")
             
             # 提取 JSON
             if "```json" in content:
                 start = content.find("```json") + 7
                 end = content.find("```", start)
                 content = content[start:end].strip()
+                print(f"[Router] 提取JSON代码块: {content[:200]}...")
             elif "```" in content:
                 start = content.find("```") + 3
                 end = content.find("```", start)
                 content = content[start:end].strip()
+                print(f"[Router] 提取代码块: {content[:200]}...")
             
             result = safe_parse_json(content)
             
@@ -1751,7 +1798,7 @@ class TaskRouter:
             while not result and retry_count < max_retries:
                 retry_count += 1
                 print(f"[Router] JSON 解析失败，重试 {retry_count}/{max_retries}")
-                # 加强 prompt，要求返回严格 JSON
+                print(f"[Router] LLM返回内容({len(content)}字符): {content[:500]}...")
                 retry_prompt = prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字。"
                 response = await self.llm.ainvoke([HumanMessage(content=retry_prompt)])
                 content = response.content.strip()

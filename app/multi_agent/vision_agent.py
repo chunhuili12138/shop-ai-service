@@ -166,7 +166,7 @@ class VisionAgent:
         # 如果是相对路径（如 /file/upload/5/filename.jpg），尝试读取本地文件
         if image_url.startswith("/file/upload/"):
             # 转换为本地文件路径
-            file_path = os.path.join("C:/shop-operate/uploads", image_url.replace("/file/upload/", ""))
+            file_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "uploads", image_url.replace("/file/upload/", ""))
             if os.path.exists(file_path):
                 with open(file_path, "rb") as f:
                     image_data = f.read()
