@@ -224,6 +224,7 @@ class AgentLoopResult:
             "total_duration_ms": self.total_duration_ms,
             "model_used": self.model_used,
             "role": self.role,
+            "success": bool(self.answer and self.answer.strip() and "无法生成回答" not in self.answer),
             "messages": [
                 {
                     "role": self._get_message_role(msg),

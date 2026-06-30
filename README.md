@@ -402,6 +402,12 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ## 更新日志
 
+### v0.8.1 (2026-06-30)
+
+**Bug 修复**
+- 修复 `AgentLoopResult.to_dict()` 缺少 `success` 字段导致 Tool Agent 执行结果永远返回 `success=False` 的问题
+- `success` 判断逻辑：answer 存在且非空，且不包含 "无法生成回答" 错误信息
+
 ### v0.8.0 (2026-06-22)
 
 **Router 优化**
