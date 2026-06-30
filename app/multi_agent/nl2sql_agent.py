@@ -60,11 +60,40 @@ MySQL 8.0
 
 - **"新顾客"** → 查 `customers` 表，按 `created_at` 筛选
 - **"活跃顾客"** → 查 `purchases` 表，按 `customer_id` 去重
+- **"顾客来源"** → `customers.source`: store-门店, meituan-美团, douyin-抖音, miniapp-小程序, other-其他
+- **"顾客标签"** → `customers.tags`: vip, regular, family, new, big, complaint, star, xin
 
 ### 退款相关查询
 
 - **"退款金额"** → 查 `refund_records` 表的 `refund_amount` 字段
 - **"退款状态"** → status: 1=处理中, 2=已完成, 3=已拒绝
+- **"退款率"** → `退款金额 / 总销售额`（近30天）
+
+### 套餐相关查询
+
+- **"套餐类型"** → `packages.type`: 1=单次, 2=周卡, 3=月卡
+- **"热销套餐"** → 按 `purchases.package_id` 分组统计
+
+### 核销相关查询
+
+- **"核销数/核销次数"** → 查 `game_sessions` 表，`status=2`（已完成）
+- **"进行中"** → 查 `game_sessions` 表，`status=1`（进行中）
+
+### 库存相关查询
+
+- **"库存预警"** → `inventory.quantity <= materials.min_stock`
+- **"物料类型"** → `materials.type`: 1=消耗品, 2=工具
+
+### 考勤相关查询
+
+- **"考勤状态"** → `attendance_records.status`: 1=正常, 2=迟到, 3=早退, 4=加班
+- **"迟到"** → `status=2`
+- **"加班"** → `status=4`
+
+### 优惠券相关查询
+
+- **"优惠券类型"** → `coupons.type`: 1=固定金额, 2=百分比, 3=兑换券
+- **"未使用优惠券"** → `coupon_usages.status=1`
 
 ## 用户问题
 {task}
