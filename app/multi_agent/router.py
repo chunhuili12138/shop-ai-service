@@ -626,29 +626,160 @@ class TaskRouter:
 {history_context}
 """
 
-            prompt = f"""判断用户问题是否需要追问才能准确回答。
+            prompt = f"""你是店铺智能助手的路由判断模块。你的职责是帮助店长管理店铺，包括查询数据（营业额、顾客、库存）、执行操作（退款审批、优惠券发放、核销）、回答问题。
 
-用户问题："{question}"
+判断用户输入的性质，决定如何处理。
+
+## 用户输入
+"{question}"
 {history_section}
-判断规则：
-1. 先查看对话历史，理解用户的上下文
-2. 如果用户的问题可以从对话历史中推断出含义，不需要追问
-3. 如果用户的问题是对之前回答的纠正或确认，不需要追问
-4. 只有当问题完全无法从上下文理解时，才需要追问
+{shop_section}
 
-需要追问的情况：
-1. 问题缺少关键信息，且对话历史中也没有
-2. 问题有多种理解方式，无法从上下文推断
-3. 问题涉及全新的主题，与历史对话无关
+## 高优先级 Skills
+以下是系统预设的高优先级 Skills，如果用户的问题明显匹配到某个 Skill，优先使用 Skill 执行：
 
-不需要追问的情况：
-1. 问题可以从对话历史中推断出含义
-2. 问题是对之前回答的纠正或确认
-3. 问题涉及店铺内部数据（营业额、退款、库存等）
-4. 问题是通用知识
+1. **今日经营概况**（id: daily_business_summary）
+   - 关键词：今天、今日、日报、当天、今日概况、今日经营
+   - 描述：查看今天的经营数据概况，包括营收、客流、热销套餐、库存预警等
 
-只返回 JSON 格式：
-{{"need_clarify": true/false, "reason": "原因", "missing_info": "缺少的信息"}}"""
+2. **本月经营情况分析**（id: monthly_business_analysis）
+   - 关键词：本月、经营、情况、分析、月度、这个月、月报
+   - 描述：分析本月的整体经营情况，包括营收、顾客、支出、退款等
+
+3. **退款分析**（id: refund_analysis）
+   - 关键词：退款、退货、退款率、退款原因、退款分析、退款统计
+   - 描述：分析退款情况，包括状态分布、原因分析、趋势等
+
+4. **顾客消费分析**（id: customer_consumption_analysis）
+   - 关键词：顾客、消费、会员、客户
+   - 描述：分析顾客的消费情况
+
+5. **员工绩效**（id: staff_performance）
+   - 关键词：员工、绩效、业绩、核销、销售额、排行
+   - 描述：分析员工绩效，包括核销数、考勤等
+
+6. **月度对比**（id: monthly_comparison）
+   - 关键词：对比、比较、本月、上月、环比、增长
+   - 描述：对比本月和上月的经营数据
+
+7. **库存查询**（id: inventory_query）
+   - 关键词：库存、物料、货物、存货、缺货
+   - 描述：查询当前库存状态
+
+8. **收支查询**（id: revenue_expense_query）
+   - 关键词：收入、支出、收支、利润、盈亏、赚、花
+   - 描述：查询收入和支出情况
+
+## 判断任务
+
+请判断以下问题，并返回所有判断结果：
+
+### 1. 输入是否有效？
+
+有效的输入：有意义的问题、请求、操作指令、问候
+无效的输入：无意义字符、测试输入、不完整输入、纯表情
+
+### 2. 是否匹配到高优先级 Skill？
+
+判断用户的问题是否明显匹配到上面列出的某个 Skill。
+- 如果匹配到，返回 matched_skill 字段，包含匹配的 Skill ID
+- 如果没有匹配到，matched_skill 返回 null
+
+### 3. 是否是上下文相关问题？
+
+判断方法：用户的问题是否需要结合之前的对话才能理解？
+
+- 是：引用之前的内容（"那林志玲的呢"）、纠正之前的回答（"处理中不就是待处理嘛"）、确认之前的结论
+- 否：全新的问题
+
+### 4. 是否需要追问？
+
+判断方法：用户的问题是否有足够的信息来执行？
+
+- 需要追问：缺少关键信息，且对话历史中也没有（如只说"退款"，没说哪个顾客）
+- 不需要追问：意图清晰，或可从对话历史推断
+
+### 5. 用户想要什么？
+
+判断用户当前的**真实意图**，从以下三种中选择：
+
+**A. 执行操作**（is_operation=true, need_requery=false）
+用户想要执行一个具体的操作（退款、发放优惠券、核销等）
+
+**B. 获取数据**（is_operation=false, need_requery=true）
+用户想要查询数据库获取信息，包括：
+- 查询新数据："今天营业额多少"
+- 验证/核实已有数据："再次确认金额统计是否正确"、"帮我再查一下"
+- 获取更新的数据："重新查一下今天的库存"
+- 追问数据相关问题："5月份的你为什么不查询？"、"这个数据对吗？"、"为什么退款这么多？"
+- 质疑数据准确性："你确定只有2笔？"、"这个金额对吗？"
+
+**C. 对话交流**（is_operation=false, need_requery=false）
+用户想要讨论、解释、确认已有信息，不需要查询数据库：
+- 纠正/确认："处理中不就是待处理嘛"、"你说的对"
+- 闲聊/问候："你好"、"好的"
+- 纯文本追问："为什么这么说"（不需要查数据）
+
+### 操作类请求的追问规则（重要）
+
+如果用户的问题是操作类请求，即使缺少参数，也不要追问。操作类请求缺少参数时，路由到对应的工具，让工具的确认弹窗让用户填写。
+
+判断方法：
+1. 用户的请求是否包含明确的操作动词？（入库、退款、发放、核销、回复、发送、拒绝、批准、同意）
+2. 用户是否指定了操作对象？（洗衣液、张三、优惠券）
+3. 如果动词+对象都有 → 意图明确，不需要追问
+4. 如果只有动词没有对象 → 可能需要追问
+5. 如果动词和对象都没有 → 需要追问
+
+示例：
+- "物料库存加入这个洗衣液" → 意图明确（入库洗衣液），不需要追问
+- "拒绝退款" → 意图明确（拒绝退款），不需要追问
+- "退款" → 意图不明确（哪个顾客？批准还是拒绝？），需要追问
+- "帮我处理一下" → 意图完全不明确，需要追问
+
+### 特殊情况：确认性回复
+
+当用户回复"是的"、"对"、"是"、"确认"、"好的"等确认性词语时，需要根据对话历史判断确认的内容：
+
+1. 查看对话历史中助手的上一个问题
+2. 判断助手问题的性质：
+   - 助手问的是"是否要查询XX数据" → B（获取数据）
+   - 助手问的是"是否要执行XX操作" → A（执行操作）
+   - 助手问的是文本确认 → C（对话交流）
+
+示例：
+- 助手: "请问具体指哪两个的金额？" → 用户: "是的" → B（查询金额）
+- 助手: "确定要退款吗？" → 用户: "是的" → A（执行退款）
+- 助手: "我理解对了吗？" → 用户: "是的" → C（文本确认）
+
+判断方法：
+- 如果用户的问题**需要从数据库获取信息**才能回答 → B
+- 如果用户的问题**基于对话历史的文字就能回答** → C
+- 如果用户想要**执行一个具体操作** → A
+- 如果用户是**确认性回复**，根据助手上一个问题的性质判断
+
+## 路由决策
+
+根据第 5 节的判断：
+- A（执行操作）→ 继续路由到工具
+- B（获取数据）→ 继续路由到 nl2sql
+- C（对话交流）→ 直接返回 LLM Agent
+
+其他优先级：
+- is_valid=false → 无效输入，返回提示
+- need_clarify=true → 需要追问
+- matched_skill != null → 优先使用 Skill 执行
+
+## 输出格式
+返回 JSON：
+{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": false, "is_operation": true/false, "need_requery": false, "matched_skill": "skill_id 或 null", "reason": "判断原因（简短说明）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写）"}}
+
+【重要】输出格式要求：
+1. 只返回一个完整的 JSON 对象
+2. 不要包含任何其他文字、解释或 markdown 代码块标记
+3. 所有字符串必须用双引号
+4. 布尔值必须是 true/false（小写）
+5. matched_skill 如果没有匹配到，返回 null（不是字符串"null"）"""
             
             from langchain_core.messages import HumanMessage
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
@@ -745,29 +876,160 @@ class TaskRouter:
 {history_context}
 """
 
-            prompt = f"""判断以下用户输入是否是一个有效的问题或请求。
+            prompt = f"""你是店铺智能助手的路由判断模块。你的职责是帮助店长管理店铺，包括查询数据（营业额、顾客、库存）、执行操作（退款审批、优惠券发放、核销）、回答问题。
 
-用户输入："{question}"
+判断用户输入的性质，决定如何处理。
+
+## 用户输入
+"{question}"
 {history_section}
-有效的输入：
-- 有明确意图的问题（如"今天营业额多少"）
-- 有明确意图的请求（如"帮我查一下库存"、"同意林志玲退款"、"拒绝黄晓明的退款"）
-- 基于对话历史的纠正或确认（如"处理中不就是待处理嘛"）
-- 简短但有意义的问候（如"你好"、"在吗"）
+{shop_section}
 
-无效的输入：
-- 无意义的字符（如"111"、"aaa"、"..."）
-- 测试输入（如"test"、"测试"）
-- 不完整的输入（如"帮我"、"查询"）
-- 纯表情符号
+## 高优先级 Skills
+以下是系统预设的高优先级 Skills，如果用户的问题明显匹配到某个 Skill，优先使用 Skill 执行：
 
-判断规则：
-1. 如果用户输入可以从对话历史中推断出意图，判定为有效
-2. 如果用户输入是操作指令（如批准、拒绝、查询、发放），判定为有效
-3. 只有真正无意义的输入才判定为无效
+1. **今日经营概况**（id: daily_business_summary）
+   - 关键词：今天、今日、日报、当天、今日概况、今日经营
+   - 描述：查看今天的经营数据概况，包括营收、客流、热销套餐、库存预警等
 
-只返回 JSON 格式：
-{{"is_valid": true/false, "reason": "原因", "suggestion": "如果无效，给用户的友好反问"}}"""
+2. **本月经营情况分析**（id: monthly_business_analysis）
+   - 关键词：本月、经营、情况、分析、月度、这个月、月报
+   - 描述：分析本月的整体经营情况，包括营收、顾客、支出、退款等
+
+3. **退款分析**（id: refund_analysis）
+   - 关键词：退款、退货、退款率、退款原因、退款分析、退款统计
+   - 描述：分析退款情况，包括状态分布、原因分析、趋势等
+
+4. **顾客消费分析**（id: customer_consumption_analysis）
+   - 关键词：顾客、消费、会员、客户
+   - 描述：分析顾客的消费情况
+
+5. **员工绩效**（id: staff_performance）
+   - 关键词：员工、绩效、业绩、核销、销售额、排行
+   - 描述：分析员工绩效，包括核销数、考勤等
+
+6. **月度对比**（id: monthly_comparison）
+   - 关键词：对比、比较、本月、上月、环比、增长
+   - 描述：对比本月和上月的经营数据
+
+7. **库存查询**（id: inventory_query）
+   - 关键词：库存、物料、货物、存货、缺货
+   - 描述：查询当前库存状态
+
+8. **收支查询**（id: revenue_expense_query）
+   - 关键词：收入、支出、收支、利润、盈亏、赚、花
+   - 描述：查询收入和支出情况
+
+## 判断任务
+
+请判断以下问题，并返回所有判断结果：
+
+### 1. 输入是否有效？
+
+有效的输入：有意义的问题、请求、操作指令、问候
+无效的输入：无意义字符、测试输入、不完整输入、纯表情
+
+### 2. 是否匹配到高优先级 Skill？
+
+判断用户的问题是否明显匹配到上面列出的某个 Skill。
+- 如果匹配到，返回 matched_skill 字段，包含匹配的 Skill ID
+- 如果没有匹配到，matched_skill 返回 null
+
+### 3. 是否是上下文相关问题？
+
+判断方法：用户的问题是否需要结合之前的对话才能理解？
+
+- 是：引用之前的内容（"那林志玲的呢"）、纠正之前的回答（"处理中不就是待处理嘛"）、确认之前的结论
+- 否：全新的问题
+
+### 4. 是否需要追问？
+
+判断方法：用户的问题是否有足够的信息来执行？
+
+- 需要追问：缺少关键信息，且对话历史中也没有（如只说"退款"，没说哪个顾客）
+- 不需要追问：意图清晰，或可从对话历史推断
+
+### 5. 用户想要什么？
+
+判断用户当前的**真实意图**，从以下三种中选择：
+
+**A. 执行操作**（is_operation=true, need_requery=false）
+用户想要执行一个具体的操作（退款、发放优惠券、核销等）
+
+**B. 获取数据**（is_operation=false, need_requery=true）
+用户想要查询数据库获取信息，包括：
+- 查询新数据："今天营业额多少"
+- 验证/核实已有数据："再次确认金额统计是否正确"、"帮我再查一下"
+- 获取更新的数据："重新查一下今天的库存"
+- 追问数据相关问题："5月份的你为什么不查询？"、"这个数据对吗？"、"为什么退款这么多？"
+- 质疑数据准确性："你确定只有2笔？"、"这个金额对吗？"
+
+**C. 对话交流**（is_operation=false, need_requery=false）
+用户想要讨论、解释、确认已有信息，不需要查询数据库：
+- 纠正/确认："处理中不就是待处理嘛"、"你说的对"
+- 闲聊/问候："你好"、"好的"
+- 纯文本追问："为什么这么说"（不需要查数据）
+
+### 操作类请求的追问规则（重要）
+
+如果用户的问题是操作类请求，即使缺少参数，也不要追问。操作类请求缺少参数时，路由到对应的工具，让工具的确认弹窗让用户填写。
+
+判断方法：
+1. 用户的请求是否包含明确的操作动词？（入库、退款、发放、核销、回复、发送、拒绝、批准、同意）
+2. 用户是否指定了操作对象？（洗衣液、张三、优惠券）
+3. 如果动词+对象都有 → 意图明确，不需要追问
+4. 如果只有动词没有对象 → 可能需要追问
+5. 如果动词和对象都没有 → 需要追问
+
+示例：
+- "物料库存加入这个洗衣液" → 意图明确（入库洗衣液），不需要追问
+- "拒绝退款" → 意图明确（拒绝退款），不需要追问
+- "退款" → 意图不明确（哪个顾客？批准还是拒绝？），需要追问
+- "帮我处理一下" → 意图完全不明确，需要追问
+
+### 特殊情况：确认性回复
+
+当用户回复"是的"、"对"、"是"、"确认"、"好的"等确认性词语时，需要根据对话历史判断确认的内容：
+
+1. 查看对话历史中助手的上一个问题
+2. 判断助手问题的性质：
+   - 助手问的是"是否要查询XX数据" → B（获取数据）
+   - 助手问的是"是否要执行XX操作" → A（执行操作）
+   - 助手问的是文本确认 → C（对话交流）
+
+示例：
+- 助手: "请问具体指哪两个的金额？" → 用户: "是的" → B（查询金额）
+- 助手: "确定要退款吗？" → 用户: "是的" → A（执行退款）
+- 助手: "我理解对了吗？" → 用户: "是的" → C（文本确认）
+
+判断方法：
+- 如果用户的问题**需要从数据库获取信息**才能回答 → B
+- 如果用户的问题**基于对话历史的文字就能回答** → C
+- 如果用户想要**执行一个具体操作** → A
+- 如果用户是**确认性回复**，根据助手上一个问题的性质判断
+
+## 路由决策
+
+根据第 5 节的判断：
+- A（执行操作）→ 继续路由到工具
+- B（获取数据）→ 继续路由到 nl2sql
+- C（对话交流）→ 直接返回 LLM Agent
+
+其他优先级：
+- is_valid=false → 无效输入，返回提示
+- need_clarify=true → 需要追问
+- matched_skill != null → 优先使用 Skill 执行
+
+## 输出格式
+返回 JSON：
+{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": false, "is_operation": true/false, "need_requery": false, "matched_skill": "skill_id 或 null", "reason": "判断原因（简短说明）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写）"}}
+
+【重要】输出格式要求：
+1. 只返回一个完整的 JSON 对象
+2. 不要包含任何其他文字、解释或 markdown 代码块标记
+3. 所有字符串必须用双引号
+4. 布尔值必须是 true/false（小写）
+5. matched_skill 如果没有匹配到，返回 null（不是字符串"null"）"""
             
             from langchain_core.messages import HumanMessage
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
@@ -891,30 +1153,72 @@ class TaskRouter:
 "{question}"
 {history_section}
 {shop_section}
+
+## 高优先级 Skills
+以下是系统预设的高优先级 Skills，如果用户的问题明显匹配到某个 Skill，优先使用 Skill 执行：
+
+1. **今日经营概况**（id: daily_business_summary）
+   - 关键词：今天、今日、日报、当天、今日概况、今日经营
+   - 描述：查看今天的经营数据概况，包括营收、客流、热销套餐、库存预警等
+
+2. **本月经营情况分析**（id: monthly_business_analysis）
+   - 关键词：本月、经营、情况、分析、月度、这个月、月报
+   - 描述：分析本月的整体经营情况，包括营收、顾客、支出、退款等
+
+3. **退款分析**（id: refund_analysis）
+   - 关键词：退款、退货、退款率、退款原因、退款分析、退款统计
+   - 描述：分析退款情况，包括状态分布、原因分析、趋势等
+
+4. **顾客消费分析**（id: customer_consumption_analysis）
+   - 关键词：顾客、消费、会员、客户
+   - 描述：分析顾客的消费情况
+
+5. **员工绩效**（id: staff_performance）
+   - 关键词：员工、绩效、业绩、核销、销售额、排行
+   - 描述：分析员工绩效，包括核销数、考勤等
+
+6. **月度对比**（id: monthly_comparison）
+   - 关键词：对比、比较、本月、上月、环比、增长
+   - 描述：对比本月和上月的经营数据
+
+7. **库存查询**（id: inventory_query）
+   - 关键词：库存、物料、货物、存货、缺货
+   - 描述：查询当前库存状态
+
+8. **收支查询**（id: revenue_expense_query）
+   - 关键词：收入、支出、收支、利润、盈亏、赚、花
+   - 描述：查询收入和支出情况
+
 ## 判断任务
 
-请判断以下四个问题，并返回所有判断结果：
+请判断以下问题，并返回所有判断结果：
 
 ### 1. 输入是否有效？
 
 有效的输入：有意义的问题、请求、操作指令、问候
 无效的输入：无意义字符、测试输入、不完整输入、纯表情
 
-### 2. 是否是上下文相关问题？
+### 2. 是否匹配到高优先级 Skill？
+
+判断用户的问题是否明显匹配到上面列出的某个 Skill。
+- 如果匹配到，返回 matched_skill 字段，包含匹配的 Skill ID
+- 如果没有匹配到，matched_skill 返回 null
+
+### 3. 是否是上下文相关问题？
 
 判断方法：用户的问题是否需要结合之前的对话才能理解？
 
 - 是：引用之前的内容（"那林志玲的呢"）、纠正之前的回答（"处理中不就是待处理嘛"）、确认之前的结论
 - 否：全新的问题
 
-### 3. 是否需要追问？
+### 4. 是否需要追问？
 
 判断方法：用户的问题是否有足够的信息来执行？
 
 - 需要追问：缺少关键信息，且对话历史中也没有（如只说"退款"，没说哪个顾客）
 - 不需要追问：意图清晰，或可从对话历史推断
 
-### 4. 用户想要什么？
+### 5. 用户想要什么？
 
 判断用户当前的**真实意图**，从以下三种中选择：
 
@@ -975,7 +1279,7 @@ class TaskRouter:
 
 ## 路由决策
 
-根据第 4 节的判断：
+根据第 5 节的判断：
 - A（执行操作）→ 继续路由到工具
 - B（获取数据）→ 继续路由到 nl2sql
 - C（对话交流）→ 直接返回 LLM Agent
@@ -983,16 +1287,18 @@ class TaskRouter:
 其他优先级：
 - is_valid=false → 无效输入，返回提示
 - need_clarify=true → 需要追问
+- matched_skill != null → 优先使用 Skill 执行
 
 ## 输出格式
 返回 JSON：
-{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": false, "is_operation": true/false, "need_requery": false, "reason": "判断原因（简短说明）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写）"}}
+{{"is_valid": true/false, "is_context_question": true/false, "need_clarify": false, "is_operation": true/false, "need_requery": false, "matched_skill": "skill_id 或 null", "reason": "判断原因（简短说明）", "missing_info": "缺少的信息（仅 need_clarify=true 时填写）"}}
 
 【重要】输出格式要求：
 1. 只返回一个完整的 JSON 对象
 2. 不要包含任何其他文字、解释或 markdown 代码块标记
 3. 所有字符串必须用双引号
-4. 布尔值必须是 true/false（小写）"""
+4. 布尔值必须是 true/false（小写）
+5. matched_skill 如果没有匹配到，返回 null（不是字符串"null"）"""
 
             from langchain_core.messages import HumanMessage
             response = await self.llm.ainvoke([HumanMessage(content=prompt)])
@@ -1007,6 +1313,7 @@ class TaskRouter:
                 result.setdefault("need_clarify", False)
                 result.setdefault("is_operation", False)
                 result.setdefault("need_requery", False)
+                result.setdefault("matched_skill", None)
                 result.setdefault("reason", "")
                 result.setdefault("missing_info", "")
                 result["quick_questions"] = default_quick_questions
@@ -1119,11 +1426,28 @@ class TaskRouter:
                     break
         
         check_result = await self._check_question(task, shop_name, history_context)
-        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, requery={check_result.get('need_requery')}, operation={check_result.get('is_operation')}, reason={check_result.get('reason')}")
+        print(f"[Router] 问题检查结果: valid={check_result.get('is_valid')}, context={check_result.get('is_context_question')}, clarify={check_result.get('need_clarify')}, requery={check_result.get('need_requery')}, operation={check_result.get('is_operation')}, matched_skill={check_result.get('matched_skill')}, reason={check_result.get('reason')}")
+        
+        # 4. 检查是否匹配到高优先级 Skill（LLM 判断）
+        if check_result.get("matched_skill"):
+            skill_id = check_result["matched_skill"]
+            skill_manager = get_skill_manager()
+            skill = skill_manager.get_skill(skill_id)
+            if skill:
+                print(f"[Router] LLM 匹配到预设 Skill: {skill.name}")
+                return {
+                    "mode": "single",
+                    "agent": None,
+                    "reasoning": f"匹配预设 Skill: {skill.name}",
+                    "understanding": task,
+                    "analysis": "",
+                    "plan": [{"step": step.step, "action": step.task, "tool": step.agent} for step in skill.steps],
+                    "complexity": "complex" if len(skill.steps) > 1 else "simple",
+                }
         
         # 路由决策（按优先级顺序）
         
-        # 4a. 无效输入
+        # 5a. 无效输入
         if not check_result.get("is_valid"):
             return {
                 "mode": "clarify",

@@ -27,33 +27,26 @@ from app.experience.pool import get_experience_pool
 from app.utils.json_parser import safe_parse_json
 
 
-REVIEW_PROMPT = """评审以下回答是否满足用户需求。
+REVIEW_PROMPT = """评审以下执行结果是否满足用户需求。
 
 用户问题：{task}
 
-AI回答：
+执行结果：
 {result}
 
 评审标准：
-1. 回答是否直接解决了用户的问题？
-2. 是否包含不应该展示给用户的内容（错误信息、内部执行过程）？
-3. 回答是否完整、专业、有价值？
-4. 是否有胡编乱造的内容？
+1. 执行是否成功完成？
+2. 数据是否完整、准确？
+3. 是否有错误信息？
 
 重要补充规则：
-- 如果回答包含 batch_confirm 弹窗，说明操作流程正确，等待用户确认后执行
-- batch_confirm 是正确的输出，不是失败，不应扣分
-- 返回 batch_confirm = 至少 80 分
-- 返回 confirm 弹窗 = 至少 70 分
-- 只有返回错误信息或无意义内容才应扣分
+- 如果结果是原始数据（查询结果、知识库内容、网页信息、操作结果等），说明执行已成功完成，等待后续汇总分析
+- 执行成功 = 至少 80 分
+- 包含 batch_confirm 弹窗 = 至少 90 分
+- 只有执行失败或返回错误信息才应扣分
 
 请返回 JSON 格式：
-{{
-    "passed": true/false,
-    "score": 0-100,
-    "issues": ["问题1", "问题2"],
-    "suggestion": "改进建议"
-}}"""
+{{"passed": true/false, "score": 0-100, "issues": ["问题1", "问题2"], "suggestion": "改进建议"}}"""
 
 
 class SupervisorAgent:

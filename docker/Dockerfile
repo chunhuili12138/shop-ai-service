@@ -2,6 +2,10 @@ FROM python:3.11-slim
 
 WORKDIR /app
 
+# 设置中国时区
+ENV TZ=Asia/Shanghai
+RUN ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone
+
 # 使用国内Debian镜像源
 RUN sed -i 's|deb.debian.org|mirrors.tencent.com|g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
     sed -i 's|deb.debian.org|mirrors.tencent.com|g' /etc/apt/sources.list 2>/dev/null || true
@@ -11,6 +15,7 @@ RUN apt-get update && apt-get install -y \
     gcc \
     g++ \
     curl \
+    tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 # 复制依赖文件

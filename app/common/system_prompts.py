@@ -74,6 +74,9 @@ SUMMARIZE_SYSTEM_TEMPLATE = """{role_definition}
 # 用户指令（放入 HumanMessage，包含上下文和任务）
 SUMMARIZE_USER_TEMPLATE = """===== 以下是本次对话的完整上下文，请据此生成最终回答 =====
 
+【当前日期】
+{current_date}
+
 【用户信息】
 用户：{display_name}（{username}）
 角色：{role}
@@ -122,6 +125,7 @@ def build_summarize_prompt(
     role: str,
     shop_name: str,
     shop_id: int,
+    current_date: str = None,
 ) -> tuple:
     """
     构建最终汇总 Prompt（SystemMessage + HumanMessage）
@@ -129,6 +133,11 @@ def build_summarize_prompt(
     Returns:
         (system_prompt, user_prompt) 元组
     """
+    # 获取当前日期
+    if not current_date:
+        from datetime import datetime
+        current_date = datetime.now().strftime("%Y年%m月%d日")
+    
     # 格式化计划
     plan_text = ""
     for i, step in enumerate(plan):
@@ -164,6 +173,7 @@ def build_summarize_prompt(
 
     # 用户指令（上下文 + 任务）
     user_prompt = SUMMARIZE_USER_TEMPLATE.format(
+        current_date=current_date,
         display_name=display_name or "用户",
         username=username or "unknown",
         role=role or "店员",

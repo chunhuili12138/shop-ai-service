@@ -4,7 +4,6 @@
 """
 
 import httpx
-import asyncio
 import logging
 from typing import Optional
 from app.config import settings
@@ -25,9 +24,9 @@ class PackageAPIClient:
     def __init__(self, base_url: str = None):
         self.base_url = base_url or JAVA_BACKEND_URL
 
-    async def fetch_packages(self, shop_id: int) -> list[dict]:
+    def fetch_packages(self, shop_id: int) -> list[dict]:
         """
-        从Java后端API获取套餐列表（异步）
+        从Java后端API获取套餐列表（同步）
 
         Args:
             shop_id: 店铺ID
@@ -43,8 +42,8 @@ class PackageAPIClient:
                 "size": 100,
             }
 
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                response = await client.get(url, params=params)
+            with httpx.Client(timeout=10.0) as client:
+                response = client.get(url, params=params)
                 response.raise_for_status()
 
             data = response.json()

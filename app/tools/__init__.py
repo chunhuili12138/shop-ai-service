@@ -18,6 +18,7 @@ Tool Calling 模块 — 工具注册表
 - notification.py: 通知消息
 - report.py: 财务报表和报告导出
 - operation.py: 操作记录查询
+- datetime_tools.py: 日期时间与计算工具
 """
 
 from app.tools.revenue import query_revenue
@@ -43,6 +44,7 @@ from app.tools.schedule import query_staff_schedules, query_attendance_records
 from app.tools.notification import query_notifications, send_notification, execute_send_notification
 from app.tools.report import query_daily_snapshots, query_revenue_trend, export_report
 from app.tools.operation import query_operation_logs
+from app.tools.datetime_tools import get_current_datetime, calculate_date, calculator, format_datetime
 
 
 # 所有工具列表（StructuredTool / BaseTool）
@@ -91,6 +93,11 @@ TOOLS = [
     export_report,
     # 操作记录
     query_operation_logs,
+    # 日期时间与计算
+    get_current_datetime,
+    calculate_date,
+    calculator,
+    format_datetime,
 ]
 
 # 工具名称 → 工具实例 映射
