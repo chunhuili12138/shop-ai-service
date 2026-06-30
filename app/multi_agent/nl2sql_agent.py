@@ -38,6 +38,34 @@ MySQL 8.0
 
 {experience_prompt}
 
+## 业务规则（重要）
+
+### 收入相关查询
+
+1. **"营收/营业额/销售额/订单金额"** → 查 `purchases` 表的 `paid_amount` 字段
+   - 这是顾客的**订单金额**，包含已核销和未核销的订单
+   - SQL: `SELECT COALESCE(SUM(p.paid_amount), 0) FROM purchases p WHERE p.shop_id = :shop_id AND p.status = 1`
+
+2. **"实际收入/确认收入/核销收入"** → 查 `revenue_records` 表的 `amount` 字段
+   - 这是**实际核销确认的收入**，只有顾客消费后才会计入
+   - SQL: `SELECT COALESCE(SUM(rr.amount), 0) FROM revenue_records rr WHERE rr.shop_id = :shop_id`
+
+3. **"收入/进账"** → 默认查 `revenue_records` 表（更准确反映实际收入）
+
+### 支出相关查询
+
+- **"支出/花费/成本"** → 查 `expenses` 表的 `amount` 字段
+
+### 顾客相关查询
+
+- **"新顾客"** → 查 `customers` 表，按 `created_at` 筛选
+- **"活跃顾客"** → 查 `purchases` 表，按 `customer_id` 去重
+
+### 退款相关查询
+
+- **"退款金额"** → 查 `refund_records` 表的 `refund_amount` 字段
+- **"退款状态"** → status: 1=处理中, 2=已完成, 3=已拒绝
+
 ## 用户问题
 {task}
 
