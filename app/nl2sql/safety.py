@@ -21,9 +21,11 @@ def validate_sql(sql: str) -> tuple[bool, str]:
     """
     sql_upper = sql.upper().strip()
 
-    # 1. 检查危险关键词
+    # 1. 检查危险关键词（使用单词边界匹配，避免误判）
     for keyword in settings.NL2SQL_DANGEROUS_KEYWORDS:
-        if keyword in sql_upper:
+        # 使用正则表达式匹配完整的关键词（单词边界）
+        pattern = r'\b' + re.escape(keyword) + r'\b'
+        if re.search(pattern, sql_upper):
             return False, f"包含危险操作: {keyword}"
 
     # 2. 检查是否是SELECT语句（只允许查询）
