@@ -681,8 +681,8 @@ class NL2SQLAgent:
             # 尝试解析 SQL
             parsed = parse_one(sql)
             
-            # 检查是否是 SELECT 语句
-            if parsed.key != "select":
+            # 检查是否是 SELECT 语句（支持 UNION ALL）
+            if parsed.key not in ("select", "union"):
                 return False, "只允许 SELECT 查询语句"
             
             return True, ""
@@ -948,7 +948,7 @@ class NL2SQLAgent:
                         agent_type="nl2sql",
                         question=task,
                         error=syntax_error,
-                        original_solution=raw_sql,
+                        original_solution=sql,
                     )
                     return AgentResult(
                         agent=AgentType.NL2SQL,
