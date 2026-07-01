@@ -280,7 +280,11 @@ class StreamHandler:
 
             session_mgr = get_session_manager()
 
-            session_mgr.add_message(self.session_id, "user", message)
+            # 存储用户消息，包含图片URL
+            message_data = {}
+            if image_url:
+                message_data["images"] = [image_url]
+            session_mgr.add_message(self.session_id, "user", message, **message_data)
 
 
 
