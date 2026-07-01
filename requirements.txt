@@ -36,6 +36,11 @@ sqlglot>=26.0.0
 
 # ========== Document Processing ==========
 pymupdf==1.25.1
+python-calamine>=0.3.0
+mammoth>=1.7.0
+olefile>=0.47
+charset-normalizer>=3.0
+clevercsv>=0.8
 
 # ========== Monitoring ==========
 langfuse==2.59.7

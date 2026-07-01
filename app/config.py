@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     LLM_BASE_URL: str = "https://token-plan-cn.xiaomimimo.com/v1"  # Token Plan 中国集群
     LLM_MODEL: str = "mimo-v2.5"
     LLM_TEMPERATURE: float = 0.7
-    LLM_MAX_TOKENS: int = 2000  # MiMo API 限制，使用较小的值
+    LLM_MAX_TOKENS: int = 4000  # 提升输出上限，支持含文件内容的较长回复
 
     # ========== MiMo 模型配置 ==========
     MIMO_VISION_MODEL: str = "mimo-v2.5"  # 多模态模型（支持图像/视频/音频）

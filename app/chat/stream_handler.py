@@ -4,6 +4,7 @@
 """
 
 import json
+import re
 import asyncio
 import time
 import logging
@@ -248,7 +249,7 @@ class StreamHandler:
         # 返回原始内容
 
         return content
-    async def process(self, message: str, image_url: str = None) -> AsyncGenerator[str, None]:
+    async def process(self, message: str, image_url: str = None, file_info: dict = None) -> AsyncGenerator[str, None]:
 
         """
 
@@ -280,11 +281,50 @@ class StreamHandler:
 
             session_mgr = get_session_manager()
 
-            # 存储用户消息，包含图片URL
+            # 存储用户消息，包含图片URL和文件信息
             message_data = {}
             if image_url:
                 message_data["images"] = [image_url]
+            if file_info:
+                message_data["files"] = [{
+                    "url": file_info.get("url", ""),
+                    "name": file_info.get("name", ""),
+                    "type": file_info.get("type", ""),
+                    "size": file_info.get("size", 0),
+                    "category": file_info.get("category", "document"),
+                    "content": file_info.get("content", ""),
+                }]
             session_mgr.add_message(self.session_id, "user", message, **message_data)
+
+        # ====== 两级上下文构建 ======
+        self._l1_summary = ""
+        self._l2_full = ""
+        original_message = message
+
+        if file_info and file_info.get("content"):
+            file_name = file_info.get("name", "文件")
+            content = file_info['content']
+
+            # L1 摘要：前 1500 字 + 结构概要（约 600 tokens）
+            is_table = content.strip().startswith("|")
+            self._l1_summary = self._build_file_summary(file_name, content, is_table)
+
+            # L2 全文：完整内容（兜底截断保护）
+            MAX_CONTEXT_CHARS = 40000
+            l2_content = content
+            if len(message) + len(l2_content) > MAX_CONTEXT_CHARS:
+                available = max(1000, MAX_CONTEXT_CHARS - len(message) - 100)
+                l2_content = l2_content[:available] + "\n...（内容过长，已截断）"
+
+            self._l2_full = (
+                f"<user_question>\n{message}\n</user_question>\n\n"
+                f"<document name=\"{file_name}\">\n"
+                f"{l2_content}\n"
+                f"</document>"
+            )
+
+            # _process_single / _process_multi 路径：用 L2 全文
+            message = self._l2_full
 
 
 
@@ -398,7 +438,7 @@ class StreamHandler:
 
             understanding = route_result.get("understanding", f"用户想要{message}")
 
-            yield self._format_sse("thinking", understanding, "理解问题")
+            yield self._format_sse("thinking", self._strip_xml_for_display(understanding), "理解问题")
 
             
 
@@ -421,8 +461,8 @@ class StreamHandler:
                 plan_items = []
 
                 for step in plan:
-
-                    plan_items.append(f"{step.get('step')}. {step.get('action')}")
+                    action_clean = self._strip_xml_for_display(step.get('action', ''))
+                    plan_items.append(f"{step.get('step')}. {action_clean}")
 
                 plan_text = "\n".join(plan_items)
 
@@ -740,8 +780,20 @@ class StreamHandler:
             logger.info(f"[StreamHandler] ===== 执行批次 {batch_idx + 1}/{len(step_batches)} =====")
             logger.info(f"[StreamHandler] 批次包含步骤: {[s['step_num'] for s in batch]}")
             
-            # 输出批次开始
-            yield self._format_sse("processing", f"执行批次 {batch_idx + 1}/{len(step_batches)}: {[s['action'] for s in batch]}...", f"批次 {batch_idx + 1}")
+            # 确定当前批次的第一个步骤的工具类型，用于显示进度描述
+            batch_tool = batch[0].get("tool", "llm") if len(batch) == 1 else "multi"
+            tool_map_display = {
+                "数据查询": "正在查询数据", "查询数据": "正在查询数据",
+                "知识检索": "正在检索知识库", "知识问答": "正在检索知识库",
+                "工具调用": "正在执行操作",
+                "分析总结": "正在分析", "总结分析": "正在分析",
+                "nl2sql": "正在查询数据", "rag": "正在检索知识库",
+                "tool": "正在执行操作", "llm": "正在分析",
+            }
+            progress_msg = tool_map_display.get(batch_tool, "正在处理")
+            
+            # 输出批次开始（用户友好的进度描述）
+            yield self._format_sse("processing", f"{progress_msg}...", "处理中")
             
             if len(batch) == 1:
                 # 单个步骤，直接执行
@@ -768,6 +820,8 @@ class StreamHandler:
                 
                 # 构建步骤上下文
                 step_context = f"问题理解：{understanding}\n"
+                if getattr(self, '_l1_summary', ''):
+                    step_context += f"\n{self._l1_summary}\n"
                 if analysis:
                     step_context += f"分析：{analysis}\n"
                 if step_results:
@@ -787,18 +841,25 @@ class StreamHandler:
                 logger.info(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
                 logger.info(f"[StreamHandler] 步骤 {i+1} 执行结果: success={step_result.get('success')}, result_length={len(step_result.get('result', ''))}")
                 
-                # 输出步骤结果
+                # 输出步骤结果（用户友好的进度描述）
+                step_display_names = {
+                    "rag": "知识检索完成",
+                    "nl2sql": "数据查询完成",
+                    "tool": "操作执行完成",
+                    "llm": "分析完成",
+                }
+                step_display = step_display_names.get(tool, "处理完成")
                 if step_result.get("success"):
-                    yield self._format_sse("processing", f"✓ 步骤 {i+1} 完成", f"步骤 {i+1}")
+                    yield self._format_sse("processing", f"{step_display}", "处理中")
                 else:
-                    yield self._format_sse("processing", f"✗ 步骤 {i+1} 失败: {step_result.get('error', '')}", f"步骤 {i+1}")
+                    yield self._format_sse("processing", f"处理失败: {step_result.get('error', '')}", "处理中")
             else:
                 # 多个步骤，并行执行
                 logger.info(f"[StreamHandler] 并行执行步骤: {[s['step_num'] for s in batch]}")
                 logger.info(f"[StreamHandler] 并行任务数: {len(batch)}")
                 
                 # 输出并行执行开始
-                yield self._format_sse("processing", f"并行执行 {len(batch)} 个步骤...", f"并行批次 {batch_idx + 1}")
+                yield self._format_sse("processing", "正在并行处理...", "处理中")
                 
                 # 构建并行任务
                 tasks = []
@@ -853,7 +914,7 @@ class StreamHandler:
                             "action": action, "tool": tool, "success": False,
                             "result": "", "error": str(result)
                         })
-                        yield self._format_sse("processing", f"✗ 步骤 {step_num} 失败: {str(result)}", f"步骤 {step_num}")
+                        yield self._format_sse("processing", f"处理失败: {str(result)}", "处理中")
                     else:
                         # 检查是否有特殊类型（确认框、批量确认、多选列表）
                         if result.get("confirm_data"):
@@ -884,10 +945,10 @@ class StreamHandler:
                         step_results.append(result)
                         if result.get("success"):
                             logger.info(f"[StreamHandler] ✓ 步骤 {step_num} 成功，结果长度: {len(result.get('result', ''))}")
-                            yield self._format_sse("processing", f"✓ 步骤 {step_num} 完成", f"步骤 {step_num}")
+                            yield self._format_sse("processing", f"处理完成", "处理中")
                         else:
                             logger.warning(f"[StreamHandler] ✗ 步骤 {step_num} 失败: {result.get('error', '')}")
-                            yield self._format_sse("processing", f"✗ 步骤 {step_num} 失败: {result.get('error', '')}", f"步骤 {step_num}")
+                            yield self._format_sse("processing", f"处理失败: {result.get('error', '')}", "处理中")
                 
                 batch_duration = (time.time() - batch_start) * 1000
                 logger.info(f"[StreamHandler] 批次 {batch_idx + 1} 执行耗时: {batch_duration:.0f}ms")
@@ -1037,6 +1098,11 @@ class StreamHandler:
         step_result = None
         
         try:
+            # L2 全文按需注入（LLM / RAG / NL2SQL / 空工具类型需要文件内容）
+            FILE_AWARE_TOOLS = {"llm", "rag", "nl2sql", "", None}
+            if tool in FILE_AWARE_TOOLS and getattr(self, '_l2_full', ''):
+                step_context = step_context + f"\n{self._l2_full}\n"
+
             # tool 为空时直接用 LLM 回答
             if not tool or tool.strip() == "":
                 logger.info(f"[StreamHandler] 工具为空，直接用 LLM 回答")
@@ -1109,7 +1175,7 @@ class StreamHandler:
                 result_text = step_result.get("result", "")
                 
                 # 检查结果是否有效
-                is_valid_result = self._is_valid_result(result_text, action)
+                is_valid_result = self._is_valid_result(result_text, action, tool)
                 
                 if is_valid_result:
                     # 对 RAG 和 LLM Agent 进行评审
@@ -2732,7 +2798,7 @@ Router 分析: {analysis}
             return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
         return await self._call_tool_direct(tool, tool_name, message, route_context)
 
-    def _is_valid_result(self, result: str, action: str) -> bool:
+    def _is_valid_result(self, result: str, action: str, tool: str = "") -> bool:
 
         """
 
@@ -2745,6 +2811,8 @@ Router 分析: {analysis}
             result: 执行结果
 
             action: 原始任务
+
+            tool: 使用的工具类型
 
         
 
@@ -2759,6 +2827,17 @@ Router 分析: {analysis}
             return False
 
         
+
+        # RAG 专用的"未找到"关键词（RAG 找不到知识库数据，应切换其他工具）
+        if tool == "rag":
+            rag_not_found_keywords = [
+                "暂未找到", "未找到", "没有找到", "未发现", "没有发现",
+                "无法查询到", "未查询到",
+            ]
+            for keyword in rag_not_found_keywords:
+                if keyword in result:
+                    print(f"[StreamHandler] RAG 未找到结果: {keyword}")
+                    return False
 
         # 空结果关键词（查询成功但没有数据，这是有效结果）
 
@@ -2850,7 +2929,7 @@ Router 分析: {analysis}
 
         # 判断任务类型
 
-        is_data_query = any(kw in task_lower for kw in ["查询", "数据", "金额", "数量", "支出", "收入", "多少"])
+        is_data_query = any(kw in task_lower for kw in ["查询", "数据", "金额", "数量", "支出", "收入", "多少", "信息", "列", "列出"])
 
         is_knowledge = any(kw in task_lower for kw in ["什么是", "如何", "怎么", "定义", "解释"])
 
@@ -2950,7 +3029,7 @@ Router 分析: {analysis}
 
                 result_text = result.get("result", "")
 
-                if self._is_valid_result(result_text, action):
+                if self._is_valid_result(result_text, action, alt_tool):
 
                     print(f"[StreamHandler] 替代工具 {alt_tool} 成功")
 
@@ -4826,4 +4905,28 @@ Router 分析: {analysis}
         }
 
         return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def _build_file_summary(self, file_name: str, content: str, is_table: bool) -> str:
+        lines = [l for l in content.split("\n") if l.strip()]
+        line_count = len(lines)
+        total_chars = len(content)
+        preview = content[:1500]
+        if len(content) > 1500:
+            preview += f"\n...（完整内容共 {total_chars} 字）"
+
+        return (
+            f"<file_summary name=\"{file_name}\" "
+            f"type=\"{'table' if is_table else 'text'}\" "
+            f"lines=\"{line_count}\" "
+            f"total_chars=\"{total_chars}\">\n"
+            f"{preview}\n"
+            f"</file_summary>"
+        )
+
+    @staticmethod
+    def _strip_xml_for_display(text: str) -> str:
+        result = re.sub(r'</?user_question>', '', text)
+        result = re.sub(r'<document name="([^"]*)">.*?</document>', r'[文件: \1]', result, flags=re.DOTALL)
+        result = re.sub(r'<file_summary[^>]*>.*?</file_summary>', '', result, flags=re.DOTALL)
+        return result.strip()
 

@@ -192,6 +192,7 @@ class ChatRequest(BaseModel):
     message: str
     session_id: Optional[str] = None
     image_url: Optional[str] = None
+    file_info: Optional[dict] = None  # { url, name, type, size, category, content }
 
 
 class CreateSessionRequest(BaseModel):
@@ -262,7 +263,7 @@ async def chat_stream(
 
         # 3. 返回 SSE 流
         return StreamingResponse(
-            handler.process(request.message, request.image_url),
+            handler.process(request.message, request.image_url, request.file_info),
             media_type="text/event-stream",
             headers={
                 "Cache-Control": "no-cache",
