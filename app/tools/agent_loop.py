@@ -32,6 +32,7 @@ from app.tools import TOOLS
 from app.common.user_context import UserContext
 from app.tools.permissions import get_tools_for_role
 from app.tools.prompt_templates import get_system_prompt
+from app.common.system_prompts import ROLE_DEFINITION, SECURITY_RULES
 
 logger = logging.getLogger(__name__)
 
@@ -360,7 +361,7 @@ class AgentLoop:
         """默认系统提示词"""
         tools_desc = self._get_tools_description()
         backend_nav = self._get_backend_navigation()
-        return f"""你是店铺智能助手，负责帮助店长查询和分析店铺数据。
+        return f"""{ROLE_DEFINITION}{SECURITY_RULES}
 
 ## 可用工具
 {tools_desc}

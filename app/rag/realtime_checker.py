@@ -3,7 +3,7 @@
 使用LLM判断是否需要实时查询套餐数据
 """
 
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from app.llm import get_chat_llm
 from app.rag.intent_router import IntentType
 
@@ -61,10 +61,8 @@ class RealtimeChecker:
         try:
             llm = self._get_llm()
             
-            prompt = ChatPromptTemplate.from_template(REALTIME_CHECK_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({"question": question})
+            prompt = REALTIME_CHECK_PROMPT.format(question=question)
+            response = llm.invoke([HumanMessage(content=prompt)])
             result = response.content.strip().lower()
             
             need_realtime = "yes" in result

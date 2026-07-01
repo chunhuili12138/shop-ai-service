@@ -5,6 +5,7 @@
 
 from langchain_core.prompts import ChatPromptTemplate
 from app.llm import get_chat_llm
+from app.common.system_prompts import ROLE_DEFINITION
 from typing import Optional
 from enum import Enum
 
@@ -129,7 +130,7 @@ INTENT_PROMPTS = {
 
 请用友好、专业的语气回答：""",
 
-    IntentType.GENERAL: """你是「店铺智能助手」，专为店铺经营者设计的 AI 助手。你的职责是帮助店长管理店铺运营、查询数据、分析经营状况。
+    IntentType.GENERAL: f"""{ROLE_DEFINITION}
 
 【重要规则】
 1. 先判断「相关信息」是否与用户问题直接相关。如果不相关，则忽略该信息
@@ -137,9 +138,9 @@ INTENT_PROMPTS = {
 3. 如果信息中没有相关内容，请如实说"根据现有信息，暂未找到相关说明"
 
 相关信息：
-{context}
+{{context}}
 
-用户问题：{question}
+用户问题：{{question}}
 
 请用友好、专业的语气回答：""",
 }

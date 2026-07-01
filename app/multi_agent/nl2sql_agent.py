@@ -20,6 +20,7 @@ from app.nl2sql.executor import execute_sql_with_retry, format_results_for_llm
 from app.experience.pool import get_experience_pool
 from app.nl2sql.mysql_rules import ALL_MYSQL_RULES
 from app.utils.json_parser import safe_parse_json
+from app.common.status_mappings import STATUS_MAPPINGS
 
 
 # SQL 生成 Prompt(集成 CoT 推理、经验池和 MySQL 规则)
@@ -66,12 +67,12 @@ MySQL 8.0
 ### 退款相关查询
 
 - **"退款金额"** → 查 `refund_records` 表的 `refund_amount` 字段
-- **"退款状态"** → status: 1=处理中, 2=已完成, 3=已拒绝
+- **"退款状态"** → 见下方状态映射表
 - **"退款率"** → `退款金额 / 总销售额`（近30天）
 
 ### 套餐相关查询
 
-- **"套餐类型"** → `packages.type`: 1=单次, 2=周卡, 3=月卡
+- **"套餐类型"** → 见下方状态映射表
 - **"热销套餐"** → 按 `purchases.package_id` 分组统计
 
 ### 核销相关查询
@@ -82,17 +83,15 @@ MySQL 8.0
 ### 库存相关查询
 
 - **"库存预警"** → `inventory.quantity <= materials.min_stock`
-- **"物料类型"** → `materials.type`: 1=消耗品, 2=工具
+- **"物料类型"** → 见下方状态映射表
 
 ### 考勤相关查询
 
-- **"考勤状态"** → `attendance_records.status`: 1=正常, 2=迟到, 3=早退, 4=加班
-- **"迟到"** → `status=2`
-- **"加班"** → `status=4`
+- **"考勤状态"** → 见下方状态映射表
 
 ### 优惠券相关查询
 
-- **"优惠券类型"** → `coupons.type`: 1=固定金额, 2=百分比, 3=兑换券
+- **"优惠券类型"** → 见下方状态映射表
 - **"未使用优惠券"** → `coupon_usages.status=1`
 
 ## 用户问题
@@ -131,21 +130,15 @@ MySQL 8.0
    `SELECT TABLE_NAME, TABLE_COMMENT FROM INFORMATION_SCHEMA.TABLES WHERE TABLE_SCHEMA = DATABASE()`
 4. 生成的 SQL 必须包含人类可读的标签（使用 CASE WHEN）
 
-## 输出规范（必须遵守）
-1. **所有输出必须是人类可读的**，不能使用原始代码或数字指代
-2. 状态字段必须映射为中文标签：
-   - 退款状态(status)：`CASE WHEN 1 THEN '处理中' WHEN 2 THEN '已完成' WHEN 3 THEN '已拒绝' END`
-   - 套餐类型(type)：`CASE WHEN 1 THEN '单次' WHEN 2 THEN '周卡' WHEN 3 THEN '月卡' END`
-   - 优惠券类型(type)：`CASE WHEN 1 THEN '固定金额' WHEN 2 THEN '百分比' WHEN 3 THEN '兑换券' END`
-   - 支付方式(payment_method)：`CASE WHEN 'wechat' THEN '微信' WHEN 'alipay' THEN '支付宝' WHEN 'cash' THEN '现金' END`
-3. 如果不确定某个字段的映射，查询 sys_dicts 表获取：
-   `SELECT dict_label, dict_value FROM sys_dicts WHERE dict_code = 'xxx'`
-4. 列名使用中文别名：
+{status_mappings}
+
+## 额外输出规范
+1. 列名使用中文别名：
    - status → 状态
    - refund_amount → 退款金额
    - nickname → 顾客姓名
    - created_at → 创建时间
-5. 金额字段使用 FORMAT 函数格式化：`FORMAT(amount, 2)`
+2. 金额字段使用 FORMAT 函数格式化：`FORMAT(amount, 2)`
 
 请直接返回 SQL 语句："""
 
@@ -438,6 +431,7 @@ class NL2SQLAgent:
                 task=task,
                 mysql_rules=ALL_MYSQL_RULES,
                 current_date=datetime.now().strftime("%Y年%m月%d日"),
+                status_mappings=STATUS_MAPPINGS,
             )
             response = await llm.ainvoke([HumanMessage(content=prompt)])
             sql = sanitize_sql(response.content.strip())
@@ -607,6 +601,7 @@ class NL2SQLAgent:
             task=enhanced_task,
             mysql_rules=ALL_MYSQL_RULES,
             current_date=current_date,
+            status_mappings=STATUS_MAPPINGS,
         )
         
         # 并行生成候选 SQL

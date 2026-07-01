@@ -58,6 +58,18 @@ OUTPUT_RULES = """
 """
 
 
+
+# ==================== JSON 输出格式规范 ====================
+
+JSON_FORMAT_RULE = """
+## 输出格式要求（必须遵守）
+1. 只返回纯 JSON，不要包含 markdown 代码块（不要用 ```json 或 ```）
+2. 键和字符串值必须使用双引号，禁止使用单引号
+3. 不要返回任何解释文字、问候语或额外内容
+4. 确保 JSON 语法正确（逗号、括号、引号均需闭合）
+"""
+
+
 # ==================== 汇总 Prompt 模板 ====================
 
 # 系统指令（放入 SystemMessage，最高优先级）
@@ -153,7 +165,7 @@ def build_summarize_prompt(
         if sr.get("success") and sr.get("result"):
             result = sr["result"]
             if len(result) > 5000:
-                result = result[:5000] + "\n...（数据过多已截断）"
+                result = result[:5000] + "\n...【数据过长已截断，以上是前5000字符，后续数据可能不完整】"
             steps_text += f"  结果: {result}\n"
         elif sr.get("error"):
             steps_text += f"  错误: {sr['error']}\n"

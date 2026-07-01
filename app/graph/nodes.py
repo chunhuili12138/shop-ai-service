@@ -5,6 +5,7 @@ Agent节点定义
 
 from langchain_core.messages import AIMessage
 from app.llm import get_chat_llm
+from app.common.system_prompts import ROLE_DEFINITION
 from app.graph.state import AgentState
 
 
@@ -77,6 +78,11 @@ async def nl2sql_node(state: AgentState) -> dict:
 
 用户问题: {last_message}
 
+【安全规则】
+1. 只生成 SELECT 查询，禁止 INSERT/UPDATE/DELETE/DROP
+2. 如果问题与数据查询无关，返回 "-- 无法生成SQL: 非查询类问题"
+3. 不要编造数据库结构或字段名
+
 只返回SQL:"""
         
         response = await llm.ainvoke([HumanMessage(content=prompt)])
@@ -129,7 +135,7 @@ async def tool_node(state: AgentState) -> dict:
         ])
 
         # 使用LLM选择工具
-        system_prompt = f"""你是店铺智能助手的工具选择器。根据用户问题，选择合适的工具并生成参数。
+        system_prompt = f"""{ROLE_DEFINITION}
 
 ## 可用工具
 {tools_desc}
@@ -139,6 +145,7 @@ async def tool_node(state: AgentState) -> dict:
 2. 如果需要多个维度的数据，可以选择多个工具
 3. 所有工具调用都需要 shop_id 参数
 4. 返回JSON格式的工具调用列表
+5. 【禁止编造】如果没有合适的工具，返回空数组 []，不要编造不存在的工具
 
 ## 输出格式
 ```json
@@ -218,7 +225,9 @@ async def respond_node(state: AgentState) -> dict:
     information = context or tool_results
     last_message = state["messages"][-1].content
 
-    prompt = f"""你是店铺智能助手，请根据以下信息回答用户问题。
+    prompt = f"""{ROLE_DEFINITION}
+
+请根据以下信息回答用户问题。
 
 相关信息：
 {information}

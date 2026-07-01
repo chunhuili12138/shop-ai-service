@@ -9,7 +9,7 @@ CRAG实现（Corrective RAG）
 """
 
 from typing import Optional
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from langchain_core.documents import Document
 from app.llm import get_chat_llm
 
@@ -71,6 +71,8 @@ BATCH_DOCUMENT_GRADING_PROMPT = """你是文档质量评估专家。逐一评估
 
 请严格按以下 JSON 数组格式返回，为每个文档打分：
 [{{"doc_id": 1, "grade": "Correct", "reason": "简要原因"}}, {{"doc_id": 2, "grade": "Incorrect", "reason": "简要原因"}}]
+
+{json_format_rule}
 
 只返回 JSON 数组，不要返回其他任何文字或 markdown 标记。"""
 
@@ -139,13 +141,8 @@ class CRAG:
         """
         try:
             llm = self._get_llm()
-            prompt = ChatPromptTemplate.from_template(DOCUMENT_GRADING_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "question": question,
-                "document": document,
-            })
+            prompt = DOCUMENT_GRADING_PROMPT.format(question=question, document=document)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             grade = response.content.strip()
             
@@ -182,13 +179,12 @@ class CRAG:
                 content = doc.page_content[:500]  # 截断避免 token 过长
                 docs_text += f"---\n文档{i+1}:\n{content}\n"
 
-            prompt = ChatPromptTemplate.from_template(BATCH_DOCUMENT_GRADING_PROMPT)
-            chain = prompt | llm
-
-            response = chain.invoke({
-                "question": question,
-                "documents_text": docs_text,
-            })
+            prompt = BATCH_DOCUMENT_GRADING_PROMPT.format(
+                question=question,
+                documents_text=docs_text,
+                json_format_rule="",
+            )
+            response = llm.invoke([HumanMessage(content=prompt)])
 
             # 解析 JSON 数组（健壮版本）
             import json as _json
@@ -277,13 +273,8 @@ class CRAG:
                     content = doc.page_content[:500]
                     docs_text += f"---\n文档{i+1}:\n{content}\n"
 
-            prompt = ChatPromptTemplate.from_template(BATCH_REFINE_PROMPT)
-            chain = prompt | llm
-
-            response = chain.invoke({
-                "question": question,
-                "documents_text": docs_text,
-            })
+            prompt = BATCH_REFINE_PROMPT.format(question=question, documents_text=docs_text)
+            response = llm.invoke([HumanMessage(content=prompt)])
 
             refined = response.content.strip()
             print(f"[CRAG] 批量精炼完成: {len(refined)} 字符")
@@ -292,31 +283,6 @@ class CRAG:
         except Exception as e:
             print(f"[CRAG] 批量精炼失败: {str(e)}，降级为合并原文")
             return "\n\n".join(doc.page_content for doc in documents)
-        """
-        知识精炼：从文档中提取关键信息
-        
-        Args:
-            question: 用户问题
-            document: 文档内容
-        
-        Returns:
-            精炼后的关键信息
-        """
-        try:
-            llm = self._get_llm()
-            prompt = ChatPromptTemplate.from_template(KNOWLEDGE_REFINEMENT_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "question": question,
-                "document": document,
-            })
-            
-            return response.content.strip()
-            
-        except Exception as e:
-            print(f"[CRAG] 知识精炼失败: {str(e)}")
-            return document  # 失败时返回原文档
 
     def rewrite_query(self, question: str, failure_reason: str) -> str:
         """
@@ -331,13 +297,8 @@ class CRAG:
         """
         try:
             llm = self._get_llm()
-            prompt = ChatPromptTemplate.from_template(REWRITE_QUERY_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "question": question,
-                "failure_reason": failure_reason,
-            })
+            prompt = REWRITE_QUERY_PROMPT.format(question=question, failure_reason=failure_reason)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             return response.content.strip()
             

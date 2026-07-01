@@ -11,7 +11,7 @@ Agentic RAG（增强版）
 from pathlib import Path
 from typing import Optional
 import logging
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from langchain_core.documents import Document
 from app.llm import get_chat_llm
 from app.rag.intent_router import IntentRouter, IntentType, get_intent_router
@@ -437,7 +437,6 @@ class AgenticRAG:
             
             # 获取意图特定的Prompt模板
             prompt_template = self.intent_router.get_prompt_for_intent(intent)
-            prompt = ChatPromptTemplate.from_template(prompt_template)
             
             # 格式化文档
             context = "\n\n".join([
@@ -449,11 +448,8 @@ class AgenticRAG:
                 context = "暂无相关信息"
             
             # 生成回答
-            chain = prompt | llm
-            response = chain.invoke({
-                "context": context,
-                "question": question,
-            })
+            prompt = prompt_template.format(context=context, question=question)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             return response.content
             
@@ -478,14 +474,10 @@ class AgenticRAG:
             
             # 获取意图特定的Prompt模板
             prompt_template = self.intent_router.get_prompt_for_intent(intent)
-            prompt = ChatPromptTemplate.from_template(prompt_template)
             
             # 生成回答
-            chain = prompt | llm
-            response = chain.invoke({
-                "context": context,
-                "question": question,
-            })
+            prompt = prompt_template.format(context=context, question=question)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             return response.content
             

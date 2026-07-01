@@ -402,6 +402,40 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ## 更新日志
 
+### v0.9.0 (2026-07-01)
+
+**缺陷修复（13项）**
+- 修复 `AgentLoopResult.to_dict()` 缺少 `success` 字段
+- SQL 注入防护：`FIND_IN_SET` 参数化 + keyword 转义 + `getParaToInt()` 类型强制
+- XSS 防护：输出 HTML 编码 + 文件扩展名白名单
+- N+1 查询优化：Django `select_related`/`prefetch_related`
+- 店铺数据隔离：`ShopDataIsolationInterceptor` + 统一 `WHERE shop_id = ?`
+- 接口限流：`RateLimitInterceptor`(50req/s) + `@RepeatSubmit` + Redis setnx 去重
+- 并发竞态：写操作事务化 + `FOR UPDATE` 行锁
+- 角色权限体系：5 级角色 + 18 个权限码
+- `loginShopId` 空指针保护：`TokenInterceptor` 解析失败返回 401
+- 安全错误信息：`DbPro` 内部异常不暴露给前端
+- `AgentLoopResult` 导入路径修正
+- 字典值参数化 SQL 注入加固
+- `OperationLogService` 改为单例模式
+
+**Prompt 质量优化（8项）**
+- 状态枚举映射单一数据源：新增 `app/common/status_mappings.py`，集中维护所有 CASE WHEN
+- 角色定义统一：`ROLE_DEFINITION` 常量，5 个文件统一引用
+- 安全规则补齐：对缺失的 4 个 prompt 追加 `SECURITY_RULES`
+- `ChatPromptTemplate` 统一转为 `.format()` + `llm.invoke([HumanMessage(...)])`（9 文件 18 处）
+- `JSON_FORMAT_RULE` 提取为复用常量
+- 移除硬编码价格（98/298/698 元）
+- 截断提示优化为显式说明
+- 新增 18 项 prompt 一致性测试
+
+**修复问题**
+- `intent_router.py` f-string 转义修复（`{context}`/`{question}` → `{{context}}`/`{{question}}`）
+- `router.py` 安全规则改为引用 `SECURITY_RULES` 常量
+- `parallel_executor.py` 追加 `SECURITY_RULES` 到规划 prompt
+- 删除 `crag.py` 悬挂的 `refine_knowledge` 孤儿代码（无 `def` 声明）
+- `agent_loop.py` 追加 `SECURITY_RULES` 到系统提示词
+
 ### v0.8.1 (2026-06-30)
 
 **Bug 修复**

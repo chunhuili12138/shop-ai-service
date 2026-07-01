@@ -9,7 +9,7 @@ Self-RAG实现
 """
 
 from typing import Optional
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from langchain_core.documents import Document
 from app.llm import get_chat_llm
 
@@ -127,13 +127,8 @@ class SelfRAG:
         """
         try:
             llm = self._get_llm()
-            prompt = ChatPromptTemplate.from_template(RETRIEVAL_EVAL_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "question": question,
-                "document": document,
-            })
+            prompt = RETRIEVAL_EVAL_PROMPT.format(question=question, document=document)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             grade = response.content.strip().upper()
             
@@ -161,13 +156,8 @@ class SelfRAG:
         """
         try:
             llm = self._get_llm()
-            prompt = ChatPromptTemplate.from_template(GENERATION_EVAL_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "context": context,
-                "answer": answer,
-            })
+            prompt = GENERATION_EVAL_PROMPT.format(context=context, answer=answer)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             grade = response.content.strip().upper()
             
@@ -194,13 +184,8 @@ class SelfRAG:
         """
         try:
             llm = self._get_llm()
-            prompt = ChatPromptTemplate.from_template(QUESTION_ANSWERABILITY_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "question": question,
-                "context": context,
-            })
+            prompt = QUESTION_ANSWERABILITY_PROMPT.format(question=question, context=context)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             grade = response.content.strip().upper()
             

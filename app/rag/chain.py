@@ -45,7 +45,9 @@ async def query_with_sources(question: str, history_context: str = "") -> dict:
 {history_context}
 """
     
-    prompt = f"""你是一个专业的店铺智能助手，负责回答关于店铺运营的问题。
+    from app.common.system_prompts import ROLE_DEFINITION
+    
+    prompt = f"""{ROLE_DEFINITION}
 {history_section}
 【知识库参考】
 {context}
@@ -54,6 +56,8 @@ async def query_with_sources(question: str, history_context: str = "") -> dict:
 {question}
 
 请根据以上信息回答。如果涉及之前对话中的数据，请准确引用。如果知识库中没有相关信息，请诚实地说不知道，不要编造答案。
+
+【绝对禁止编造数据】当查询结果为空或知识库中无相关信息时，必须如实告知用户，禁止编造任何数字、名称或事实。
 
 请用友好、专业的语气回答："""
     

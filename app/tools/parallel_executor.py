@@ -6,6 +6,7 @@
 import asyncio
 import time
 from typing import Any, Dict, List, Optional
+from app.common.system_prompts import SECURITY_RULES
 from dataclasses import dataclass, field
 from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.tools import BaseTool
@@ -96,6 +97,8 @@ class ParallelToolExecutor:
 2. 如果问题需要多个维度的数据，可以规划多个工具调用
 3. 每个工具调用都要指定 shop_id
 4. 返回 JSON 格式的执行计划
+5. 【禁止编造】只使用下面列出的可用工具，不要编造不存在的工具名称
+{SECURITY_RULES}
 
 ## 输出格式
 ```json
@@ -150,7 +153,8 @@ class ParallelToolExecutor:
         prompt = self.PLANNING_PROMPT.format(
             tools_description=tools_desc,
             question=question,
-            shop_id=shop_id
+            shop_id=shop_id,
+            SECURITY_RULES=SECURITY_RULES
         )
         
         response = await llm.ainvoke([

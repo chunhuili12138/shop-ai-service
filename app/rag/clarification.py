@@ -4,7 +4,7 @@ Query Clarification模块
 """
 
 from typing import Optional
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from app.llm import get_chat_llm
 
 
@@ -106,13 +106,8 @@ class QueryClarifier:
                 ])
             
             # 生成追问
-            prompt = ChatPromptTemplate.from_template(CLARIFICATION_PROMPT)
-            chain = prompt | llm
-            
-            response = chain.invoke({
-                "question": question,
-                "context": context,
-            })
+            prompt = CLARIFICATION_PROMPT.format(question=question, context=context)
+            response = llm.invoke([HumanMessage(content=prompt)])
             
             # 解析JSON响应
             import json
@@ -141,9 +136,9 @@ class QueryClarifier:
             return {
                 "message": "请问您想了解哪种套餐的价格？",
                 "options": [
-                    "单次体验卡（98元）",
-                    "周卡（298元）",
-                    "月卡（698元）"
+                    "单次体验卡",
+                    "周卡",
+                    "月卡"
                 ],
             }
         elif any(word in question for word in ["时间", "几点", "营业"]):

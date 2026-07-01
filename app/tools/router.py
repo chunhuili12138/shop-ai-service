@@ -19,6 +19,7 @@ from app.tools.parallel_executor import (
 from app.tools.agent_loop import run_agent, run_agent_simple
 from app.common.user_context import UserContext
 from app.common.auth import verify_token, parse_authorization
+from app.common.system_prompts import SECURITY_RULES
 from monitoring.langfuse_config import create_trace, create_span
 
 router = APIRouter()
@@ -93,8 +94,9 @@ async def call_tool(
 
         # 3. 调用LLM进行工具选择
         llm = get_chat_llm(temperature=0).bind_tools(available_tools)
+        security_prompt = f"\n\n{SECURITY_RULES}"
         response = await llm.ainvoke([
-            HumanMessage(content=f"店铺ID: {user_context.shop_id}\n\n用户问题: {request.question}")
+            HumanMessage(content=f"店铺ID: {user_context.shop_id}\n\n用户问题: {request.question}{security_prompt}")
         ])
 
         # 4. 检查是否有工具调用
