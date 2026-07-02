@@ -344,7 +344,7 @@ def material_outbound(shop_id: int, material_id: int, quantity: float, remark: O
 def execute_material_inbound(shop_id: int, material_id: int, quantity: float, unit_price: Optional[float] = None, remark: Optional[str] = None, operator_id: Optional[int] = None, token: str = None) -> str:
     """执行物料入库操作（调用 Java 后端 API）"""
     from app.common.backend_client import material_inbound
-    result = material_inbound(token=token, shop_id=shop_id, material_id=material_id, quantity=str(int(quantity)), remark=remark)
+    result = material_inbound(token=token, shop_id=shop_id, material_id=material_id, quantity=str(int(quantity)), remark=remark, unit_price=unit_price)
     if result.get("success"):
         return result.get("msg", "入库成功")
     else:

@@ -837,6 +837,20 @@ class StreamHandler:
                 step_result = await self._execute_single_step(step, step_context, message, history_context, route_context, original_message)
                 step_results.append(step_result)
                 
+                # 检查是否有特殊类型（确认框、批量确认、多选列表）
+                if step_result.get("confirm_data"):
+                    confirm_data = step_result["confirm_data"]
+                    logger.info(f"[StreamHandler] 步骤 {i+1} 返回确认框")
+                    yield self._format_sse("confirm", confirm_data, "确认操作")
+                elif step_result.get("batch_confirm"):
+                    batch_data = step_result["batch_confirm"]
+                    logger.info(f"[StreamHandler] 步骤 {i+1} 返回批量确认框")
+                    yield self._format_sse("batch_confirm", batch_data, "批量确认")
+                elif step_result.get("select_data"):
+                    select_data = step_result["select_data"]
+                    logger.info(f"[StreamHandler] 步骤 {i+1} 返回多选列表")
+                    yield self._format_sse("select", select_data, "多选操作")
+                
                 step_duration = (time.time() - batch_start) * 1000
                 logger.info(f"[StreamHandler] 步骤 {i+1} 执行耗时: {step_duration:.0f}ms")
                 logger.info(f"[StreamHandler] 步骤 {i+1} 执行结果: success={step_result.get('success')}, result_length={len(step_result.get('result', ''))}")
@@ -852,7 +866,9 @@ class StreamHandler:
                 if step_result.get("success"):
                     yield self._format_sse("processing", f"{step_display}", "处理中")
                 else:
-                    yield self._format_sse("processing", f"处理失败: {step_result.get('error', '')}", "处理中")
+                    raw_error = step_result.get('error', '')
+                    user_error = self._sanitize_error(raw_error)
+                    yield self._format_sse("processing", f"处理失败: {user_error}", "处理中")
             else:
                 # 多个步骤，并行执行
                 logger.info(f"[StreamHandler] 并行执行步骤: {[s['step_num'] for s in batch]}")
@@ -914,33 +930,24 @@ class StreamHandler:
                             "action": action, "tool": tool, "success": False,
                             "result": "", "error": str(result)
                         })
-                        yield self._format_sse("processing", f"处理失败: {str(result)}", "处理中")
+                        yield self._format_sse("processing", f"处理失败: {self._sanitize_error(str(result))}", "处理中")
                     else:
                         # 检查是否有特殊类型（确认框、批量确认、多选列表）
                         if result.get("confirm_data"):
                             logger.info(f"[StreamHandler] 步骤 {step_num} 返回确认框")
                             confirm_data = result["confirm_data"]
-                            # 保存确认框消息到 session
-                            if self.session_id:
-                                try:
-                                    from app.rag.session import get_session_manager
-                                    session_mgr = get_session_manager()
-                                    confirm_text = f"【确认操作】{confirm_data.get('title', '')}\n{confirm_data.get('message', '')}"
-                                    session_mgr.add_message(self.session_id, "assistant", confirm_text)
-                                except Exception as e:
-                                    logger.error(f"[StreamHandler] 保存确认框消息失败: {str(e)}")
                             yield self._format_sse("confirm", confirm_data, "确认操作")
-                            return
+                            # 不 return，继续走汇总逻辑
                         elif result.get("batch_confirm"):
                             logger.info(f"[StreamHandler] 步骤 {step_num} 返回批量确认框")
                             batch_data = result["batch_confirm"]
                             yield self._format_sse("batch_confirm", batch_data, "批量确认")
-                            return
+                            # 不 return，继续走汇总逻辑
                         elif result.get("select_data"):
                             logger.info(f"[StreamHandler] 步骤 {step_num} 返回多选列表")
                             select_data = result["select_data"]
                             yield self._format_sse("select", select_data, "多选操作")
-                            return
+                            # 不 return，继续走汇总逻辑
                         
                         step_results.append(result)
                         if result.get("success"):
@@ -948,7 +955,7 @@ class StreamHandler:
                             yield self._format_sse("processing", f"处理完成", "处理中")
                         else:
                             logger.warning(f"[StreamHandler] ✗ 步骤 {step_num} 失败: {result.get('error', '')}")
-                            yield self._format_sse("processing", f"处理失败: {result.get('error', '')}", "处理中")
+                            yield self._format_sse("processing", f"处理失败: {self._sanitize_error(result.get('error', ''))}", "处理中")
                 
                 batch_duration = (time.time() - batch_start) * 1000
                 logger.info(f"[StreamHandler] 批次 {batch_idx + 1} 执行耗时: {batch_duration:.0f}ms")
@@ -1123,6 +1130,13 @@ class StreamHandler:
             elif tool == "tool":
                 logger.info(f"[StreamHandler] 调用 Tool Agent...")
                 step_result = await self._execute_step_tool(step_context, message)
+                # 检查是否有确认弹窗
+                if step_result and step_result.get("confirm_data"):
+                    return {
+                        "action": action, "tool": tool, "success": True,
+                        "result": "", "error": "",
+                        "confirm_data": step_result["confirm_data"]
+                    }
             
             else:
                 # 检查是否是 TOOL_MAP 中的具体工具名
@@ -1475,6 +1489,8 @@ class StreamHandler:
 
                 max_iterations=3,
 
+                include_messages=True,
+
             )
 
 
@@ -1491,13 +1507,29 @@ class StreamHandler:
 
             
 
+            # 从 AgentLoop 消息历史中检测工具返回的 confirm dict
+            confirm_data = None
+            for msg in result.get("messages", []):
+                if msg.get("role") == "tool":
+                    content = msg.get("content", "")
+                    try:
+                        tool_result = json.loads(content)
+                        if isinstance(tool_result, dict) and tool_result.get("type") == "confirm":
+                            confirm_data = tool_result
+                            print(f"[StreamHandler:Tool] 检测到 confirm_data: {tool_result.get('tool_name', '')}")
+                            break
+                    except (json.JSONDecodeError, TypeError):
+                        continue
+
             return {
 
                 "success": result.get("success", False),
 
                 "result": result.get("answer", ""),
 
-                "error": result.get("error", "")
+                "error": result.get("error", ""),
+
+                "confirm_data": confirm_data,
 
             }
 
@@ -1964,9 +1996,19 @@ Router 分析: {analysis}
 ## 兜底规则
 {fallback}
 
-## 输出格式
-分析用户消息，规划如何获取每个参数。返回 JSON：
+<instruction>
+分析用户消息，规划如何获取每个参数。先在 <thinking> 中分析，然后在 <output> 中输出 JSON。
+</instruction>
 
+<thinking>
+在这里分析：
+1. 用户消息中有哪些关键信息？
+2. 每个参数应该如何获取？（直接提取 / NL2SQL 查询 / 跳过）
+3. 哪些参数是自由文本（reason、remark等），应该留空让用户填写？
+</thinking>
+
+<output>
+只输出一个 JSON 对象，不要输出任何其他文字、解释或 markdown 代码块：
 {{
   "thought": "简要分析思路",
   "params": {{
@@ -1978,8 +2020,9 @@ Router 分析: {analysis}
     }}
   }}
 }}
+</output>
 
-规则：
+## 规则
 - 如果用户明确指定了值（如名称、ID、数量），直接填入 value（注意类型：int 填数字，str 填字符串）
 - 如果需要查询，action 填 "nl2sql"，description 用自然语言描述查询需求
 - 如果无法确定，action 填 "skip"
@@ -1988,8 +2031,7 @@ Router 分析: {analysis}
   - 自由文本参数（reason、remark、备注等）：on_empty 填 "skip"（留空让工具的 confirm 弹窗让用户填写）
 - 不要编造不存在的数据
 - 不要为自由文本字段（reason、remark、备注）设置 on_empty="select"
-- 不要输出任何解释或 markdown 代码块
-- 只返回一个完整的 JSON 对象，所有字符串用双引号，布尔值用小写 true/false"""
+- <output> 标签内只能有 JSON，不能有其他文字"""
 
             from app.llm import get_chat_llm
             from langchain_core.messages import HumanMessage
@@ -2002,13 +2044,56 @@ Router 分析: {analysis}
             plan = None
             max_retries = 2
             for attempt in range(max_retries + 1):
-                plan = self._extract_json(content)
+                try:
+                    plan = self._extract_json(content)
+                except Exception as e:
+                    print(f"[AgentLoop] JSON 解析异常: {str(e)}")
+                    plan = None
+                
                 if plan:
                     break
                 
                 if attempt < max_retries:
                     print(f"[AgentLoop] JSON 解析失败，重试 {attempt + 1}/{max_retries}")
-                    retry_prompt = system_prompt + "\n\n【重要】你上次返回的内容不是有效的 JSON。请严格只返回一个 JSON 对象，不要包含任何其他文字、解释或 markdown 代码块。"
+                    # 显示 LLM 上次返回的内容，帮助它理解问题
+                    truncated_content = content[:500] if len(content) > 500 else content
+                    retry_prompt = f"""你是参数解析助手。你上次返回的内容不是有效的 JSON。
+
+## 你上次返回的内容
+```
+{truncated_content}
+```
+
+## 问题
+你的返回内容中包含了非 JSON 的文字，或者 JSON 格式不完整，导致解析失败。
+
+## 正确的输出格式
+<thinking>
+在这里分析参数获取方式
+</thinking>
+
+<output>
+只输出一个 JSON 对象：
+{{
+  "thought": "简要分析思路",
+  "params": {{
+    "param_name": {{
+      "value": "直接值或空",
+      "action": "nl2sql|skip",
+      "description": "查询描述",
+      "on_empty": "select|skip|error"
+    }}
+  }}
+}}
+</output>
+
+## 用户消息
+{message}
+
+## 工具参数需求
+{chr(10).join(params_desc_parts)}
+
+现在请重新分析，先在 <thinking> 中思考，然后只在 <output> 标签内输出 JSON："""
                     resp = await llm.ainvoke([HumanMessage(content=retry_prompt)])
                     content = resp.content.strip()
             
@@ -2053,8 +2138,11 @@ Router 分析: {analysis}
                                 extracted_value = self._extract_id_from_nl2sql_result(result_text)
 
                             if extracted_value is not None:
-                                # 类型转换
-                                final_params[param_name] = self._convert_param_type(extracted_value, param_type)
+                                # 类型转换（all_concat 模式保留逗号分隔字符串）
+                                if extract_mode == "all_concat":
+                                    final_params[param_name] = str(extracted_value)
+                                else:
+                                    final_params[param_name] = self._convert_param_type(extracted_value, param_type)
                                 print(f"[AgentLoop] {param_name} = {final_params[param_name]}（NL2SQL 结果，extract={extract_mode}）")
                             else:
                                 # 无法提取
@@ -2141,6 +2229,17 @@ Router 分析: {analysis}
         if not content:
             return None
         
+        # 0. 尝试提取 <output> 标签内的内容
+        if "<output>" in content and "</output>" in content:
+            start = content.find("<output>") + len("<output>")
+            end = content.find("</output>")
+            if end > start:
+                json_str = content[start:end].strip()
+                try:
+                    return _json.loads(json_str)
+                except _json.JSONDecodeError:
+                    pass
+        
         # 1. 尝试直接解析
         try:
             return _json.loads(content)
@@ -2168,13 +2267,25 @@ Router 分析: {analysis}
                     pass
         
         # 4. 尝试提取第一个 { 到最后一个 }
-        if "{" in content:
+        if "{" in content and "}" in content:
             start = content.index("{")
             end = content.rindex("}") + 1
             try:
                 return _json.loads(content[start:end])
             except _json.JSONDecodeError:
                 pass
+        
+        # 5. 尝试修复不完整的 JSON（有 "{" 但没有 "}"）
+        if "{" in content and "}" not in content:
+            start = content.index("{")
+            partial = content[start:]
+            open_braces = partial.count("{") - partial.count("}")
+            if open_braces > 0:
+                partial += "}" * open_braces
+                try:
+                    return _json.loads(partial)
+                except _json.JSONDecodeError:
+                    pass
         
         return None
 
@@ -2751,6 +2862,10 @@ Router 分析: {analysis}
 
             if isinstance(answer, dict) and answer.get("type") == "confirm":
                 return {"success": True, "result": str(answer), "confirm_data": answer, "error": ""}
+            if isinstance(answer, dict) and answer.get("type") == "batch_confirm":
+                return {"success": True, "result": str(answer), "batch_confirm": answer, "error": ""}
+            if isinstance(answer, dict) and answer.get("type") == "select":
+                return {"success": True, "result": str(answer), "select_data": answer, "error": ""}
             if isinstance(answer, dict) and answer.get("type") == "error":
                 return {"success": False, "result": "", "error": answer.get("message", "操作失败")}
             return {"success": True, "result": str(answer), "error": ""}
@@ -2797,6 +2912,23 @@ Router 分析: {analysis}
                 return await self._execute_step_nl2sql(f"查询: {message}", message)
             return {"success": False, "result": "", "error": f"工具 {tool_name} 不存在"}
         return await self._call_tool_direct(tool, tool_name, message, route_context)
+
+    def _sanitize_error(self, error: str) -> str:
+        """将技术错误信息转换为用户友好的提示"""
+        if not error:
+            return "未知错误"
+        error_lower = error.lower()
+        if "operationalerror" in error_lower or "sql" in error_lower or "pymysql" in error_lower:
+            return "数据查询失败，请稍后重试"
+        if "timeout" in error_lower or "timed out" in error_lower:
+            return "请求超时，请稍后重试"
+        if "connection" in error_lower or "refused" in error_lower:
+            return "服务连接失败，请稍后重试"
+        if "permission" in error_lower or "forbidden" in error_lower:
+            return "权限不足，无法执行此操作"
+        if "not found" in error_lower or "不存在" in error_lower:
+            return "请求的资源不存在"
+        return "操作失败，请稍后重试"
 
     def _is_valid_result(self, result: str, action: str, tool: str = "") -> bool:
 
@@ -4338,33 +4470,53 @@ Router 分析: {analysis}
 
                     
 
+                    # 构建步骤结果（统一格式）
+
+                    tool_result = {"action": message, "tool": tool_name, "success": True, "result": "", "error": ""}
+
+                    
+
                     # 检查是否返回确认框
 
                     if isinstance(answer, dict) and answer.get("type") == "confirm":
 
                         yield self._format_sse("confirm", answer, "确认操作")
 
-                        return
+                        tool_result["confirm_data"] = answer
 
-                    
+                    # 检查是否返回批量确认框
+                    elif isinstance(answer, dict) and answer.get("type") == "batch_confirm":
+                        yield self._format_sse("batch_confirm", answer, "批量确认")
+                        tool_result["batch_confirm"] = answer
+
+                    # 检查是否返回多选列表
+                    elif isinstance(answer, dict) and answer.get("type") == "select":
+                        yield self._format_sse("select", answer, "多选操作")
+                        tool_result["select_data"] = answer
 
                     # 检查是否返回错误
 
-                    if isinstance(answer, dict) and answer.get("type") == "error":
+                    elif isinstance(answer, dict) and answer.get("type") == "error":
 
-                        yield self._format_sse("error", answer.get("message", "操作失败"), "错误")
+                        error_msg = answer.get("message", "操作失败")
 
-                        yield self._format_sse("done", "", "完成", done=True)
+                        yield self._format_sse("error", error_msg, "错误")
 
-                        return
+                        tool_result["success"] = False
+
+                        tool_result["error"] = error_msg
 
                     
 
                     # 正常结果
 
-                    self._ai_response_parts.append(str(answer))
+                    else:
 
-                    self._ai_response_data_type = "text"
+                        tool_result["result"] = str(answer)
+
+                        self._ai_response_parts.append(str(answer))
+
+                        self._ai_response_data_type = "text"
 
                     
 
@@ -4377,10 +4529,6 @@ Router 分析: {analysis}
                             "result_length": len(str(answer)),
 
                         })
-
-                    yield self._format_sse("answer", str(answer), "回答")
-                    yield self._format_sse("done", "", "完成", done=True)
-                    return
 
             except Exception as e:
 
@@ -4414,6 +4562,8 @@ Router 分析: {analysis}
 
                 history_context=combined_context,
 
+                include_messages=True,
+
             )
 
             
@@ -4434,62 +4584,85 @@ Router 分析: {analysis}
 
             answer = result.get("answer", "")
 
-            if isinstance(answer, dict) and answer.get("type") == "confirm":
+            tool_result = {"action": message, "tool": "agent_loop", "success": True, "result": "", "error": ""}
 
-                yield self._format_sse("confirm", answer, "确认操作")
+            
 
-            else:
+            # 从 AgentLoop 消息历史中检测 confirm_data
 
-                if isinstance(answer, dict):
+            for msg in result.get("messages", []):
+
+                if msg.get("role") == "tool":
+
+                    content = msg.get("content", "")
+
+                    try:
+
+                        tool_msg = json.loads(content)
+
+                        if isinstance(tool_msg, dict) and tool_msg.get("type") == "confirm":
+
+                            tool_result["confirm_data"] = tool_msg
+
+                            yield self._format_sse("confirm", tool_msg, "确认操作")
+
+                            break
+
+                    except (json.JSONDecodeError, TypeError):
+
+                        continue
+
+            
+
+            if not tool_result.get("confirm_data"):
+
+                if isinstance(answer, dict) and answer.get("type") == "confirm":
+
+                    yield self._format_sse("confirm", answer, "确认操作")
+
+                    tool_result["confirm_data"] = answer
+
+                elif isinstance(answer, dict):
 
                     self._ai_response_parts.append(json.dumps(answer, ensure_ascii=False))
+
+                    self._ai_response_data_type = "data"
+
+                    from app.formatter.data_formatter import get_data_formatter
+
+                    formatter = get_data_formatter()
+
+                    structured_data = await formatter.format_with_llm(message, str(answer))
+
+                    self._ai_response_structured_data = structured_data
+
+                    if trace:
+
+                        create_span(trace, "tool_result_formatted", {
+
+                            "display_type": structured_data.get("display_type"),
+
+                        })
+
+                    yield self._format_sse("data", structured_data, "工具结果")
+
+                    tool_result["result"] = str(answer)
 
                 else:
 
                     self._ai_response_parts.append(str(answer))
 
-                self._ai_response_data_type = "data"
+                    self._ai_response_data_type = "text"
 
-                
+                    yield self._format_sse("answer", str(answer), "回答")
 
-                # 使用 LLM 格式化为结构化数据
-
-                from app.formatter.data_formatter import get_data_formatter
-
-                formatter = get_data_formatter()
-
-                structured_data = await formatter.format_with_llm(message, str(answer))
-
-                
-
-                # 保存结构化数据
-
-                self._ai_response_structured_data = structured_data
-
-                
-
-                # 记录结果
-
-                if trace:
-
-                    create_span(trace, "tool_result_formatted", {
-
-                        "display_type": structured_data.get("display_type"),
-
-                    })
-
-                
-
-                yield self._format_sse("data", structured_data, "工具结果")
-                yield self._format_sse("done", "", "完成", done=True)
+                    tool_result["result"] = str(answer)
 
             
 
         except Exception as e:
 
-            print(f"[StreamHandler] Tool 处理失败: {str(e)}")  # 只在控制台记录
-
-            
+            print(f"[StreamHandler] Tool 处理失败: {str(e)}")
 
             friendly_msg = "抱歉，处理过程中出现问题，请稍后重试。"
 
@@ -4497,11 +4670,45 @@ Router 分析: {analysis}
 
             self._ai_response_data_type = "text"
 
-            
-
             yield self._format_sse("error", friendly_msg, "错误")
 
-            yield self._format_sse("done", "", "完成", done=True)
+            tool_result = {"action": message, "tool": "tool", "success": False, "result": "", "error": str(e)}
+
+        
+
+        # 汇总（所有路径统一走汇总）
+
+        yield self._format_sse("processing", "正在汇总结果...", "汇总")
+
+        hist_ctx = self._build_history_context() if hasattr(self, '_build_history_context') else history_context
+
+        understanding = (route_context or {}).get("understanding", "")
+
+        analysis = (route_context or {}).get("analysis", "")
+
+        plan = (route_context or {}).get("plan", [])
+
+        async for sse_event in self._final_summarize_stream(
+
+            user_message=message,
+
+            understanding=understanding,
+
+            analysis=analysis,
+
+            plan=plan,
+
+            step_results=[tool_result],
+
+            history_context=hist_ctx,
+
+        ):
+
+            yield sse_event
+
+        
+
+        yield self._format_sse("done", "", "完成", done=True)
 
     
 

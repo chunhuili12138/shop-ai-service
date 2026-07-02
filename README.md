@@ -402,6 +402,60 @@ TOKEN_CACHE_TTL: int = 300  # Token 缓存过期时间（秒）
 
 ## 更新日志
 
+### v1.1.0 (2026-07-02)
+
+**批量操作支持**
+- `refund_approve` 和 `refund_reject` 支持批量操作（逗号分隔 ID）
+- 新增 `_batch_refund_approve` 和 `_batch_refund_reject` 函数，返回 `batch_confirm` 弹窗
+- `execute_refund_approve` 和 `execute_refund_reject` 支持 `refund_ids` 批量执行
+- `tool_requirements.py` 中 `refund_id` 参数改为 `type: "str", extract: "all_concat"`
+- Router Prompt 更新：明确告知 LLM 退款工具支持批量操作
+
+**前端批量确认弹窗**
+- `BatchConfirmCard.vue` 支持 batch 级别 `fields`（统一设置区域）
+- `BatchConfirmData` 接口新增 `fields` 可选字段
+- `handleConfirmSelected` 合并 `batchFormData` 到每个 operation 的 params
+- 确认按钮禁用条件加入 `isBatchFormValid` 校验
+
+**SSE 事件处理优化**
+- `confirm`/`batch_confirm`/`select` 事件到达时设置 `isLoading = false`
+- `_call_tool_direct` 新增 `batch_confirm` 和 `select` 类型检测
+- `_execute_plan` 单步骤批次路径新增 `batch_confirm` 和 `select_data` 检测
+- `_process_tool` 新增 `batch_confirm` 和 `select` 类型检测
+
+**汇总 LLM 优化**
+- `build_summarize_prompt` 新增 `batch_confirm` 和 `select_data` 状态标签
+- `batch_confirm` 状态显示为"⏳ 待用户确认（批量）"，格式化 operations 详情
+- `select_data` 状态显示为"⏳ 待用户选择"
+- 新增规则 6（确认弹窗检测）和规则 7（状态判断铁律），防止编造"已批准"
+
+**Agent Loop Prompt 优化**
+- 使用 XML 标签（`<instruction>`/`<thinking>`/`<output>`）结构化 Prompt
+- `<output>` 标签内只输出 JSON，LLM 先在 `<thinking>` 中分析
+- 重试 Prompt 显示 LLM 上次返回内容，强化 JSON-only 指令
+
+**JSON 解析防御**
+- `_extract_json` 新增 `<output>` 标签解析
+- 添加 `}` 存在检查，防止 `ValueError` 崩溃
+- 新增不完整 JSON 补全逻辑（自动补全缺失的 `}`）
+- 重试机制增加 try-except 包裹
+
+**错误信息脱敏**
+- 新增 `_sanitize_error` 方法，将 SQL/连接/超时等技术错误转为用户友好提示
+- 3 处错误 yield 改用脱敏后的信息
+
+**NL2SQL 修复指引增强**
+- `ERROR_TYPE_GUIDE` 中 `unknown_column` 修复指引从 2 行扩展到完整指南
+- 包含 8 条常见跨表关联路径 + 具体 SQL 示例
+- schema 截断长度从 2000 增加到 4000
+
+**其他修复**
+- 修复 `_cache_max_size` 未定义导致路由崩溃的问题（删除冗余缓存管理代码）
+- 修复 `ConfirmCard.vue` 确认弹窗改为 overlay 弹窗（居中显示）
+- 修复 `system_prompts.py` 中 `batch_confirm` 读取 `items` 改为 `operations`
+- 修复 `execute_material_inbound` 丢失 `unit_price` 参数
+- 修复 `backend_client.material_inbound` 新增 `unit_price` 参数传递
+
 ### v0.9.0 (2026-07-01)
 
 **缺陷修复（13项）**

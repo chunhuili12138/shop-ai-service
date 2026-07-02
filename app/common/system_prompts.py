@@ -121,6 +121,8 @@ SUMMARIZE_USER_TEMPLATE = """===== 以下是本次对话的完整上下文，请
 3. 【禁止提及内部步骤】不要提及"查询本月营收数据"、"子任务"、"步骤1"等内部执行过程，直接给结果
 4. 【数据真实性铁律】只使用上方【各步骤执行结果】中的真实数据。如果某个步骤失败，只说该步骤没有数据，不要否定其他步骤的数据
 5. 【输出格式】使用 Markdown 格式，包含数据表格和分析段落
+6. 【确认弹窗检测】如果步骤结果中包含"请确认""是否批准""确认后执行""已准备好"等字样，说明操作尚未执行，你必须如实告知用户"需要确认"，绝不能编造"已批准""已完成""已执行"的结果
+7. 【状态判断铁律】只有步骤结果明确包含"审批通过""已拒绝""已执行""操作成功"等完成态关键词时，才能说操作已完成。否则一律视为"待确认"或"未完成"
 
 你必须遵守系统指令中的角色定义、安全规则和合规规则。"""
 
@@ -160,9 +162,50 @@ def build_summarize_prompt(
     # 格式化步骤结果
     steps_text = ""
     for i, sr in enumerate(step_results):
-        status = "✓ 成功" if sr.get("success") else "✗ 失败"
+        # 状态标签（优先级：confirm_data > batch_confirm > select_data > success/fail）
+        if sr.get("confirm_data"):
+            status = "⏳ 待用户确认"
+        elif sr.get("batch_confirm"):
+            status = "⏳ 待用户确认（批量）"
+        elif sr.get("select_data"):
+            status = "⏳ 待用户选择"
+        elif sr.get("success"):
+            status = "✓ 成功"
+        else:
+            status = "✗ 失败"
         steps_text += f"步骤 {i+1}: {sr.get('action', '')} [{sr.get('tool', '')}] → {status}\n"
-        if sr.get("success") and sr.get("result"):
+        # 检查是否有确认弹窗数据
+        if sr.get("confirm_data"):
+            cd = sr["confirm_data"]
+            steps_text += f"  【需要用户确认】{cd.get('title', '')}\n"
+            steps_text += f"  确认信息: {cd.get('message', '')}\n"
+            if cd.get("details"):
+                for k, v in cd["details"].items():
+                    steps_text += f"  {k}: {v}\n"
+            if cd.get("fields"):
+                for f in cd["fields"]:
+                    steps_text += f"  待填写: {f.get('label', '')} ({'必填' if f.get('required') else '可选'})\n"
+        # 检查是否有批量确认弹窗数据
+        elif sr.get("batch_confirm"):
+            bc = sr["batch_confirm"]
+            steps_text += f"  【需要用户确认（批量）】{bc.get('title', '')}\n"
+            steps_text += f"  确认信息: {bc.get('message', '')}\n"
+            if bc.get("operations"):
+                for op in bc["operations"]:
+                    steps_text += f"  - {op.get('title', '')}: {op.get('message', '')}\n"
+                    if op.get("details"):
+                        for k, v in op["details"].items():
+                            steps_text += f"    {k}: {v}\n"
+            if bc.get("fields"):
+                for f in bc["fields"]:
+                    steps_text += f"  待填写: {f.get('label', '')} ({'必填' if f.get('required') else '可选'})\n"
+        # 检查是否有多选列表数据
+        elif sr.get("select_data"):
+            sd = sr["select_data"]
+            steps_text += f"  【需要用户选择】{sd.get('title', '')}\n"
+            if sd.get("items"):
+                steps_text += f"  可选项: {len(sd['items'])} 个\n"
+        elif sr.get("success") and sr.get("result"):
             result = sr["result"]
             if len(result) > 5000:
                 result = result[:5000] + "\n...【数据过长已截断，以上是前5000字符，后续数据可能不完整】"

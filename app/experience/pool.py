@@ -6,6 +6,7 @@
 import os
 import json
 import uuid
+import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from langchain_chroma import Chroma
@@ -14,6 +15,8 @@ from app.config import settings
 from app.rag.embeddings import get_embeddings
 from app.experience.models import Experience, ExperienceType, AgentType
 from app.chroma_config import chroma_settings
+
+logger = logging.getLogger(__name__)
 
 
 class ExperiencePool:
@@ -35,11 +38,21 @@ class ExperiencePool:
     
     @property
     def vectorstore(self) -> Chroma:
-        """懒加载向量库"""
+        """懒加载向量库（加载时校验 Embedding 维度一致性）"""
         if self._vectorstore is None:
             persist_dir = os.path.join(settings.CHROMA_PERSIST_DIR, "experience")
             os.makedirs(persist_dir, exist_ok=True)
-            
+
+            # 校验 Embedding 维度与配置一致
+            test_vec = self.embeddings.embed_query("test")
+            actual_dim = len(test_vec)
+            expected_dim = settings.EMBEDDING_DIMENSIONS
+            if actual_dim != expected_dim:
+                logger.warning(
+                    f"Embedding 维度不匹配: 配置={expected_dim}, 实际={actual_dim}。"
+                    f"将使用实际维度 {actual_dim}"
+                )
+
             self._vectorstore = Chroma(
                 collection_name=self.collection_name,
                 embedding_function=self.embeddings,
@@ -80,7 +93,7 @@ class ExperiencePool:
             if similar:
                 # 合并：更新使用次数和成功次数
                 await self._merge_experience(similar.id)
-                print(f"[ExperiencePool] 合并成功案例: {similar.id}")
+                logger.info(f"合并成功案例: {similar.id}")
                 return similar.id
             
             # 创建新的经验条目
@@ -103,10 +116,10 @@ class ExperiencePool:
             # 存储到向量库
             await self._store_experience(experience)
             
-            print(f"[ExperiencePool] 记录成功案例: {experience.id}")
+            logger.info(f"记录成功案例: {experience.id}")
             return experience.id
         except Exception as e:
-            print(f"[ExperiencePool] 记录成功案例失败: {str(e)}")
+            logger.error(f"记录成功案例失败: {str(e)}")
             return ""
     
     async def record_failure_and_fix(
@@ -151,10 +164,10 @@ class ExperiencePool:
             
             await self._store_experience(experience)
             
-            print(f"[ExperiencePool] 记录失败案例: {experience.id}")
+            logger.info(f"记录失败案例: {experience.id}")
             return experience.id
         except Exception as e:
-            print(f"[ExperiencePool] 记录失败案例失败: {str(e)}")
+            logger.error(f"记录失败案例失败: {str(e)}")
             return ""
     
     async def retrieve_similar(
@@ -195,7 +208,7 @@ class ExperiencePool:
             SIMILARITY_THRESHOLD = 0.45
             for doc, score in results[:k * 2]:
                 if score > SIMILARITY_THRESHOLD:
-                    print(f"[ExperiencePool] 过滤低相似度结果: score={score:.3f}, question={doc.page_content[:50]}")
+                    logger.debug(f"过滤低相似度结果: score={score:.3f}, question={doc.page_content[:50]}")
                     continue
                 if len(experiences) >= k:
                     break
@@ -218,7 +231,7 @@ class ExperiencePool:
             
             return experiences
         except Exception as e:
-            print(f"[ExperiencePool] 检索经验失败: {str(e)}")
+            logger.warning(f"检索经验失败: {str(e)}")
             return []
     
     def format_for_prompt(self, experiences: List[Experience]) -> str:
@@ -351,7 +364,7 @@ class ExperiencePool:
                     ids=[experience_id]
                 )
         except Exception as e:
-            print(f"[ExperiencePool] 合并经验失败: {str(e)}")
+            logger.warning(f"合并经验失败: {str(e)}")
     
     async def cleanup_low_quality(self, min_quality: int = 50, min_usage: int = 2):
         """
@@ -378,9 +391,9 @@ class ExperiencePool:
             
             if expired_ids:
                 self.vectorstore.delete(ids=expired_ids)
-                print(f"[ExperiencePool] 清理低质量案例: {len(expired_ids)} 条")
+                logger.info(f"清理低质量案例: {len(expired_ids)} 条")
         except Exception as e:
-            print(f"[ExperiencePool] 清理失败: {str(e)}")
+            logger.warning(f"清理失败: {str(e)}")
     
     async def cleanup_by_frequency(self, max_age_days: int = 30, min_usage: int = 1):
         """
@@ -414,9 +427,9 @@ class ExperiencePool:
             
             if expired_ids:
                 self.vectorstore.delete(ids=expired_ids)
-                print(f"[ExperiencePool] 淘汰过期案例: {len(expired_ids)} 条")
+                logger.info(f"淘汰过期案例: {len(expired_ids)} 条")
         except Exception as e:
-            print(f"[ExperiencePool] 淘汰失败: {str(e)}")
+            logger.warning(f"淘汰失败: {str(e)}")
 
 
 # 全局实例

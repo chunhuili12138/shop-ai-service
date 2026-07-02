@@ -3,10 +3,6 @@ ShopCopilot - 店铺智能助手 AI Service
 基于 FastAPI + LangChain 构建的 AI Agent 服务
 """
 
-import os
-# 禁用 Chroma 遥测（必须在导入 Chroma 之前设置）
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
 import logging
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware

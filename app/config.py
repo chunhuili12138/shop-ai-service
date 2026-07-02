@@ -3,10 +3,6 @@
 从环境变量或 .env 文件加载配置
 """
 
-import os
-# 禁用 Chroma 遥测（必须在导入 Chroma 之前设置）
-os.environ["ANONYMIZED_TELEMETRY"] = "False"
-
 from pydantic import model_validator
 from pydantic_settings import BaseSettings
 from typing import List
@@ -71,6 +67,7 @@ class Settings(BaseSettings):
     REDIS_PORT: int = 6379
     REDIS_DB: int = 0
     REDIS_PASSWORD: str = ""
+    REDIS_SESSION_TTL: int = 259200  # 会话TTL（秒，默认3天）
 
     # ========== LangFuse 可观测性配置 ==========
     LANGFUSE_ENABLED: bool = False

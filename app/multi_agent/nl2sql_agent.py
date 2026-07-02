@@ -160,8 +160,25 @@ SELECT o.id, c.name FROM orders o JOIN customers c ...
 
 ### 2. unknown_column(未知列)
 **错误信息**:Unknown column 'xxx'
-**原因**:列名拼写错误或不存在
-**修复方案**:检查数据库结构，使用正确的列名
+**原因**:列名拼写错误、列不存在于当前表、或 JOIN 路径错误
+**修复方案**:
+1. 检查错误信息中的表别名和列名，确认该列是否真的存在于该表
+2. 如果列不存在于当前表，检查是否需要通过中间表 JOIN
+3. 常见的跨表关联路径：
+   - refund_records → purchases(purchase_id) → customers(customer_id)
+   - refund_records → purchases(purchase_id) → packages(package_id)
+   - game_sessions → customer_sessions(customer_session_id) → purchases(purchase_id)
+   - purchases → customers(customer_id)、purchases → packages(package_id)
+   - inventory → materials(material_id)
+   - purchase_orders → suppliers(supplier_id)
+   - staff_shops → staff(staff_id)、staff_shops → shops(shop_id)
+4. 仔细查看 schema 中每个表的字段列表，确认正确的 JOIN 条件
+```sql
+-- 错误: refund_records 没有 customer_id 字段
+SELECT c.nickname FROM refund_records rr JOIN customers c ON rr.customer_id = c.id
+-- 正确: 通过 purchases 表关联
+SELECT c.nickname FROM refund_records rr JOIN purchases pu ON rr.purchase_id = pu.id JOIN customers c ON pu.customer_id = c.id
+```
 
 ### 3. syntax_error(语法错误)
 **错误信息**:You have an error in your SQL syntax
@@ -581,8 +598,11 @@ class NL2SQLAgent:
             enhanced_task = f"""【Router 分析结果】
 {route_context}
 
-【用户原始问题】
-{task}"""
+【你的具体任务】
+{task}
+
+【重要】请严格按照上述"你的具体任务"生成 SQL，不要被"用户原始问题"中的其他内容干扰。
+注意：用户原始问题可能包含多个方面（如营收、顾客、支出等），但你的任务范围仅限于"你的具体任务"描述的内容。"""
         
         # 添加历史上下文
         if history_context:
@@ -674,14 +694,14 @@ class NL2SQLAgent:
         return candidates
     
     async def _select_best_sql(self, candidates: List[str], task: str, 
-                                shop_id: int) -> str:
+                                shop_id: int, route_context: str = "") -> str:
         """
-        从候选 SQL 中选择最佳的
+        从候选 SQL 中选择最佳的（全量评分制）
         
-        选择策略：
-        1. 优先选择与问题语义相关的 SQL（检查表名是否匹配问题关键词）
-        2. 其次选择有结果的 SQL
-        3. 都没有结果时返回最后一个（而非第一个，因为最后一个通常是兜底）
+        评分维度：
+        1. 表名与任务关键词匹配度（最高 40 分）
+        2. 查询结果是否非空（最高 40 分）
+        3. 任务意图与 SQL 列名语义匹配（最高 20 分）
         """
         if not candidates:
             return ""
@@ -689,31 +709,80 @@ class NL2SQLAgent:
         if len(candidates) == 1:
             return add_shop_filter(candidates[0], shop_id)
         
+        # 提取任务描述（优先从 route_context 提取当前任务）
+        task_goal = task
+        if route_context:
+            import re
+            match = re.search(r"当前任务[：:](.+?)(?:\n|$)", route_context)
+            if match:
+                task_goal = match.group(1).strip()
+        
         # 问题关键词 → 期望的表名映射
         table_hints = {
+            # === 顾客相关 ===
+            "顾客": ["customers", "c"],
+            "客户": ["customers", "c"],
+            "会员": ["customers", "c"],
+            "新顾客": ["customers", "c"],
+            "新客户": ["customers", "c"],
+            # === 营收/订单相关 ===
+            "营收": ["purchases", "revenue_records", "rr"],
+            "营业额": ["purchases", "pu"],
+            "销售额": ["purchases", "pu"],
+            "销售": ["purchases", "pu"],
+            "订单": ["purchases", "pu"],
+            "收入": ["revenue_records", "rr"],
+            "业绩": ["purchases", "pu", "game_sessions"],
+            # === 支出相关 ===
+            "支出": ["expenses", "e"],
+            "花费": ["expenses", "e"],
+            "成本": ["expenses", "e"],
+            # === 退款相关 ===
             "退款": ["refund_records", "rr"],
+            # === 钱包/充值/积分 ===
             "充值": ["wallet_transactions", "wt"],
             "钱包": ["wallet_transactions", "customer_wallets"],
+            "余额": ["customer_wallets"],
             "积分": ["points_records"],
+            # === 营销相关 ===
             "优惠券": ["coupons", "coupon_usages"],
+            "券": ["coupons", "coupon_usages"],
+            # === 评价相关 ===
             "评价": ["feedbacks"],
+            "反馈": ["feedbacks"],
+            # === 排队相关 ===
             "排队": ["queue_entries"],
+            # === 库存/物料相关 ===
             "库存": ["inventory", "materials"],
+            "物料": ["materials", "inventory"],
+            "缺货": ["inventory", "materials"],
+            "存货": ["inventory", "materials"],
+            # === 采购相关 ===
             "采购": ["purchase_orders"],
+            # === 员工/考勤/排班相关 ===
             "员工": ["staff"],
             "考勤": ["attendance_records"],
             "排班": ["staff_schedules"],
+            "打卡": ["attendance_records"],
+            # === 套餐相关 ===
+            "套餐": ["packages", "purchases"],
+            "项目": ["packages", "purchases"],
+            # === 核销相关 ===
+            "核销": ["game_sessions"],
+            "游玩": ["game_sessions"],
+            "入座": ["game_sessions"],
+            # === 通用（无特定表，但不影响匹配） ===
+            "多少": [],
+            "统计": [],
         }
         
-        # 确定问题期望的表
+        # 从 task_goal 提取期望的关键词和表
+        expected_keywords = [kw for kw in table_hints if kw in task_goal]
         expected_tables = set()
-        for keyword, tables in table_hints.items():
-            if keyword in task:
-                expected_tables.update(tables)
+        for kw in expected_keywords:
+            expected_tables.update(table_hints[kw])
         
-        best_with_match = None  # 表匹配且有结果
-        best_with_result = None  # 有结果但表不匹配
-        last_valid = candidates[-1]  # 最后一个有效候选
+        scored_candidates = []
         
         for sql in candidates:
             try:
@@ -722,30 +791,42 @@ class NL2SQLAgent:
                 
                 results = await asyncio.to_thread(execute_sql_with_retry, filtered_sql)
                 
-                if results and len(results) > 0:
-                    # 检查 SQL 是否包含期望的表
-                    sql_upper = sql.upper()
-                    table_matched = any(t.upper() in sql_upper for t in expected_tables) if expected_tables else True
-                    
-                    if table_matched and best_with_match is None:
-                        print(f"[NL2SQLAgent] 选择候选 SQL（表匹配+有结果）")
-                        best_with_match = filtered_sql
-                        break  # 表匹配且有结果，直接选这个
-                    elif best_with_result is None:
-                        best_with_result = filtered_sql
+                score = 0.0
+                sql_upper = sql.upper()
+                
+                # 维度1: 表匹配度（最高 40 分）
+                if expected_tables:
+                    table_match_count = sum(1 for t in expected_tables if t.upper() in sql_upper)
+                    score += (table_match_count / max(len(expected_tables), 1)) * 40
+                else:
+                    score += 20  # 无期望表时给中间分
+                
+                # 维度2: 有结果（最高 40 分）
+                result_count = len(results) if results else 0
+                score += min(result_count * 5, 40)
+                
+                # 维度3: 关键词语义匹配（最高 20 分）
+                if expected_keywords:
+                    keyword_match = sum(1 for kw in expected_keywords 
+                                        if kw in task_goal or kw in sql_upper)
+                    score += (keyword_match / max(len(expected_keywords), 1)) * 20
+                
+                print(f"[NL2SQLAgent] 候选评分: {score:.2f}（表匹配+有结果）")
+                scored_candidates.append((score, filtered_sql))
+                
             except Exception as e:
                 print(f"[NL2SQLAgent] 候选 SQL 执行失败: {str(e)}")
                 continue
         
-        # 优先级：表匹配+有结果 > 有结果 > 最后一个候选
-        if best_with_match:
-            return best_with_match
-        if best_with_result:
-            print(f"[NL2SQLAgent] 选择候选 SQL（有结果但表不完全匹配）")
-            return best_with_result
+        if not scored_candidates:
+            print(f"[NL2SQLAgent] 所有候选无结果，返回最后一个")
+            return add_shop_filter(candidates[-1], shop_id)
         
-        print(f"[NL2SQLAgent] 所有候选无结果，返回最后一个")
-        return add_shop_filter(last_valid, shop_id)
+        # 按分数降序排列，选最高分
+        scored_candidates.sort(key=lambda x: x[0], reverse=True)
+        best_score, best_sql = scored_candidates[0]
+        print(f"[NL2SQLAgent] 选择最佳候选 SQL（分数={best_score:.2f}）")
+        return best_sql
     
     async def _validate_sql_syntax(self, sql: str) -> tuple:
         """
@@ -875,7 +956,7 @@ class NL2SQLAgent:
             
             llm = get_chat_llm(temperature=0)
             prompt = SQL_REPAIR_PROMPT.format(
-                schema=schema[:2000],  # 限制长度
+                schema=schema[:4000],  # 限制长度（从 2000 增加到 4000，确保修复 LLM 能看到完整的表结构）
                 task=task,
                 sql=sql,
                 error=str(error)[:500],
@@ -1015,7 +1096,7 @@ class NL2SQLAgent:
                 )
             
             # 选择最佳候选 SQL
-            sql = await self._select_best_sql(candidates, task, context.shop_id)
+            sql = await self._select_best_sql(candidates, task, context.shop_id, route_context=route_context)
             
             # 6. 验证 SQL 语法
             is_valid_syntax, syntax_error = await self._validate_sql_syntax(sql)

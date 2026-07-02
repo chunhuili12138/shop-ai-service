@@ -23,6 +23,66 @@ router = APIRouter()
 
 # ==================== 辅助函数 ====================
 
+# 操作类型 → SQL 查询模板映射表
+# 新增操作类型只需在此添加条目，无需修改函数逻辑
+_OPERATION_SQL_MAP = [
+    {
+        "action_keywords": ["refund"],
+        "id_param": "refund_id",
+        "sql": """SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount
+                  FROM refund_records rr
+                  JOIN purchases pu ON rr.purchase_id = pu.id
+                  JOIN packages p ON pu.package_id = p.id
+                  LEFT JOIN customers c ON pu.customer_id = c.id
+                  WHERE rr.id = :id AND pu.shop_id = :sid""",
+    },
+    {
+        "action_keywords": ["checkin"],
+        "id_param": "customer_session_id",
+        "sql": """SELECT cs.id, c.nickname, p.name as package_name
+                  FROM customer_sessions cs
+                  JOIN purchases pu ON cs.purchase_id = pu.id
+                  JOIN packages p ON pu.package_id = p.id
+                  LEFT JOIN customers c ON pu.customer_id = c.id
+                  WHERE cs.id = :id AND cs.shop_id = :sid""",
+    },
+    {
+        "action_keywords": ["finish"],
+        "id_param": "game_session_id",
+        "sql": """SELECT gs.id, c.nickname, p.name as package_name
+                  FROM game_sessions gs
+                  LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id
+                  LEFT JOIN purchases pu ON cs.purchase_id = pu.id
+                  JOIN packages p ON pu.package_id = p.id
+                  LEFT JOIN customers c ON pu.customer_id = c.id
+                  WHERE gs.id = :id AND gs.shop_id = :sid""",
+    },
+    {
+        "action_keywords": ["material_inbound", "material_outbound"],
+        "id_param": "material_id",
+        "sql": "SELECT id, name, unit FROM materials WHERE id = :id AND shop_id = :sid",
+    },
+    {
+        "action_keywords": ["grant_coupon"],
+        "id_param": "coupon_id",
+        "sql": "SELECT id, name, value FROM coupons WHERE id = :id AND shop_id = :sid",
+    },
+    {
+        "action_keywords": ["reply_feedback"],
+        "id_param": "feedback_id",
+        "sql": """SELECT f.id, c.nickname
+                  FROM feedbacks f
+                  LEFT JOIN customers c ON f.customer_id = c.id
+                  WHERE f.id = :id AND f.shop_id = :sid""",
+    },
+    {
+        "action_keywords": ["send_notification"],
+        "id_param": None,
+        "sql": None,
+    },
+]
+
+
 def query_operated_record_details(action: str, params: dict, shop_id: int) -> dict:
     """
     根据操作类型查询被操作记录的关键信息
@@ -38,82 +98,18 @@ def query_operated_record_details(action: str, params: dict, shop_id: int) -> di
     from app.nl2sql.executor import execute_sql
 
     try:
-        if "refund" in action:
-            refund_id = params.get("refund_id")
-            if refund_id:
-                results = execute_sql(
-                    "SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount "
-                    "FROM refund_records rr "
-                    "JOIN purchases pu ON rr.purchase_id = pu.id "
-                    "JOIN packages p ON pu.package_id = p.id "
-                    "LEFT JOIN customers c ON pu.customer_id = c.id "
-                    "WHERE rr.id = :id AND pu.shop_id = :sid",
-                    {"id": refund_id, "sid": shop_id}
-                )
+        for entry in _OPERATION_SQL_MAP:
+            if not any(kw in action for kw in entry["action_keywords"]):
+                continue
+
+            if entry["sql"] is None:
+                return {"title": params.get("title", ""), "content": params.get("content", "")}
+
+            record_id = params.get(entry["id_param"])
+            if record_id:
+                results = execute_sql(entry["sql"], {"id": record_id, "sid": shop_id})
                 return results[0] if results else {}
-
-        elif "checkin" in action:
-            cs_id = params.get("customer_session_id")
-            if cs_id:
-                results = execute_sql(
-                    "SELECT cs.id, c.nickname, p.name as package_name "
-                    "FROM customer_sessions cs "
-                    "JOIN purchases pu ON cs.purchase_id = pu.id "
-                    "JOIN packages p ON pu.package_id = p.id "
-                    "LEFT JOIN customers c ON pu.customer_id = c.id "
-                    "WHERE cs.id = :id AND cs.shop_id = :sid",
-                    {"id": cs_id, "sid": shop_id}
-                )
-                return results[0] if results else {}
-
-        elif "finish" in action:
-            gs_id = params.get("game_session_id")
-            if gs_id:
-                results = execute_sql(
-                    "SELECT gs.id, c.nickname, p.name as package_name "
-                    "FROM game_sessions gs "
-                    "LEFT JOIN customer_sessions cs ON gs.customer_session_id = cs.id "
-                    "LEFT JOIN purchases pu ON cs.purchase_id = pu.id "
-                    "JOIN packages p ON pu.package_id = p.id "
-                    "LEFT JOIN customers c ON pu.customer_id = c.id "
-                    "WHERE gs.id = :id AND gs.shop_id = :sid",
-                    {"id": gs_id, "sid": shop_id}
-                )
-                return results[0] if results else {}
-
-        elif "material_inbound" in action or "material_outbound" in action:
-            material_id = params.get("material_id")
-            if material_id:
-                results = execute_sql(
-                    "SELECT id, name, unit FROM materials WHERE id = :id AND shop_id = :sid",
-                    {"id": material_id, "sid": shop_id}
-                )
-                return results[0] if results else {}
-
-        elif "grant_coupon" in action:
-            coupon_id = params.get("coupon_id")
-            if coupon_id:
-                results = execute_sql(
-                    "SELECT id, name, value FROM coupons WHERE id = :id AND shop_id = :sid",
-                    {"id": coupon_id, "sid": shop_id}
-                )
-                return results[0] if results else {}
-
-        elif "reply_feedback" in action:
-            feedback_id = params.get("feedback_id")
-            if feedback_id:
-                results = execute_sql(
-                    "SELECT f.id, c.nickname "
-                    "FROM feedbacks f "
-                    "LEFT JOIN customers c ON f.customer_id = c.id "
-                    "WHERE f.id = :id AND f.shop_id = :sid",
-                    {"id": feedback_id, "sid": shop_id}
-                )
-                return results[0] if results else {}
-
-        elif "send_notification" in action:
-            return {"title": params.get("title", ""), "content": params.get("content", "")}
-
+            return {}
     except Exception as e:
         logger.warning(f"[QueryDetails] 查询操作详情失败: {str(e)}")
 

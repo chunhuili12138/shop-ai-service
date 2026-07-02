@@ -81,9 +81,9 @@ TOOL_REQUIREMENTS = {
         "description": "拒绝退款申请",
         "params": {
             "refund_id": {
-                "type": "int",
-                "description": "退款记录ID",
-                "extract": "first",
+                "type": "str",
+                "description": "退款记录ID（多个用逗号分隔）",
+                "extract": "all_concat",
                 "required": True,
             },
             "reason": {
@@ -98,7 +98,7 @@ TOOL_REQUIREMENTS = {
 1. 从用户消息中提取顾客名
 2. 用 NL2SQL 查询: "查询顾客xxx的待处理退款记录ID"
 3. 如果找到 1 条 → 使用该 refund_id
-4. 如果找到多条 → 返回列表让用户选择
+4. 如果找到多条 → 全部返回（逗号分隔），工具会批量处理
 5. 如果没找到 → 查询所有待处理退款让用户选择
 
 获取 reason：
@@ -113,9 +113,9 @@ TOOL_REQUIREMENTS = {
         "description": "批准退款申请",
         "params": {
             "refund_id": {
-                "type": "int",
-                "description": "退款记录ID",
-                "extract": "first",
+                "type": "str",
+                "description": "退款记录ID（多个用逗号分隔）",
+                "extract": "all_concat",
                 "required": True,
             },
         },
@@ -124,7 +124,7 @@ TOOL_REQUIREMENTS = {
 1. 从用户消息中提取顾客名
 2. 用 NL2SQL 查询: "查询顾客xxx的待处理退款记录ID"
 3. 如果找到 1 条 → 使用该 refund_id
-4. 如果找到多条 → 返回列表让用户选择
+4. 如果找到多条 → 全部返回（逗号分隔），工具会批量处理
 5. 如果没找到 → 查询所有待处理退款让用户选择
 """,
         "fallback": "如果 refund_id 无法确定，查询所有待处理退款让用户选择。",

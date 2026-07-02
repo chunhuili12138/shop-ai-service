@@ -11,7 +11,7 @@ from typing import Any, Optional
 
 def safe_parse_json(content: str, default: Any = None) -> Any:
     """
-    安全解析 JSON，支持修复常见的格式问题
+    安全解析 JSON，支持修复常见格式问题
     
     Args:
         content: JSON 字符串
@@ -23,44 +23,21 @@ def safe_parse_json(content: str, default: Any = None) -> Any:
     if not content:
         return default
     
-    # 1. 提取 JSON（移除 markdown 代码块）
     extracted = extract_json_from_markdown(content)
     
-    # 2. 尝试直接解析标准 JSON
+    # 第1层：标准 JSON 解析
     try:
         return json.loads(extracted)
     except json.JSONDecodeError:
         pass
     
-    # 3. 尝试用 ast.literal_eval 解析 Python 字面量（安全处理单引号）
-    #    这能正确处理 {'name': 'John's'} 这种情况
+    # 第2层：修复单引号问题后重试
     try:
-        result = ast.literal_eval(extracted)
-        if isinstance(result, (dict, list)):
-            return result
-    except (ValueError, SyntaxError):
-        pass
-    
-    # 4. 尝试用正则精确替换键名的单引号（不替换值中的单引号）
-    try:
-        fixed = _fix_json_quotes(extracted)
-        return json.loads(fixed)
+        return json.loads(_fix_json_quotes(extracted))
     except json.JSONDecodeError:
         pass
     
-    # 5. 尝试补全缺失的括号
-    try:
-        fixed = extracted.rstrip()
-        if not fixed.endswith("}") and not fixed.endswith("]"):
-            if fixed.startswith("{"):
-                fixed += "}"
-            elif fixed.startswith("["):
-                fixed += "]"
-        return json.loads(fixed)
-    except json.JSONDecodeError:
-        pass
-    
-    # 6. 尝试移除尾部多余内容
+    # 第3层：尝试补全缺失括号后重试
     try:
         for i in range(len(extracted) - 1, -1, -1):
             if extracted[i] in ('}', ']'):
@@ -71,7 +48,6 @@ def safe_parse_json(content: str, default: Any = None) -> Any:
     except Exception:
         pass
     
-    # 7. 所有尝试都失败，返回默认值
     return default
 
 

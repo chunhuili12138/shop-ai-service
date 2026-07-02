@@ -117,11 +117,13 @@ def grant_coupon(token: str, shop_id: int, coupon_id: int, customer_ids: str) ->
     )
 
 
-def material_inbound(token: str, shop_id: int, material_id: int, quantity: str, remark: str = None) -> dict:
+def material_inbound(token: str, shop_id: int, material_id: int, quantity: str, remark: str = None, unit_price: float = None) -> dict:
     """物料入库"""
     data = {"materialId": str(material_id), "quantity": quantity}
     if remark:
         data["remark"] = remark
+    if unit_price is not None:
+        data["unitPrice"] = str(unit_price)
     return call_backend_api_sync(
         "POST", "/api/inventoryInbound",
         token=token, shop_id=shop_id,

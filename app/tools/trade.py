@@ -38,12 +38,12 @@ class RefundsQueryInput(BaseModel):
 
 class RefundApproveInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    refund_id: int = Field(description="退款记录ID")
+    refund_id: str = Field(description="退款记录ID（多个用逗号分隔）")
     remark: Optional[str] = Field(default=None, description="审批备注")
 
 class RefundRejectInput(BaseModel):
     shop_id: int = Field(description="店铺ID")
-    refund_id: int = Field(description="退款记录ID")
+    refund_id: str = Field(description="退款记录ID（多个用逗号分隔）")
     reason: Optional[str] = Field(default=None, description="拒绝原因")
 
 class GameSessionCheckinInput(BaseModel):
@@ -177,12 +177,81 @@ def query_refunds(shop_id: int, purchase_id: Optional[int] = None, status: Optio
 
 # ==================== 确认框工具（返回确认数据，不执行写操作）====================
 
-@tool(args_schema=RefundApproveInput)
-def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -> dict:
-    """审批退款（批准）。返回确认框，需用户确认后执行。"""
+def _batch_refund_approve(shop_id: int, refund_ids_str: str, remark: Optional[str] = None) -> dict:
+    """批量退款审批 - 查询所有退款详情，返回批量确认弹窗"""
     try:
+        ids = [int(x.strip()) for x in refund_ids_str.split(',') if x.strip().isdigit()]
+        if not ids:
+            return {"type": "error", "message": "未找到有效的退款记录ID"}
+
+        placeholders = ','.join([str(id) for id in ids])
+        refunds = execute_sql(
+            f"SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount, rr.deducted_amount, rr.reason "
+            f"FROM refund_records rr "
+            f"JOIN purchases pu ON rr.purchase_id = pu.id "
+            f"JOIN packages p ON pu.package_id = p.id "
+            f"LEFT JOIN customers c ON pu.customer_id = c.id "
+            f"WHERE rr.id IN ({placeholders}) AND rr.status = 1 AND pu.shop_id = :shop_id AND rr.is_deleted = 0 "
+            f"ORDER BY rr.id",
+            {"shop_id": shop_id}
+        )
+
+        if not refunds:
+            return {"type": "error", "message": "未找到待处理的退款记录"}
+
+        operations = []
+        total_amount = 0
+        for r in refunds:
+            amount = float(r.get('refund_amount', 0))
+            total_amount += amount
+            operations.append({
+                "action": "refund_approve",
+                "title": f"{r.get('nickname')} - {r.get('package_name')}",
+                "message": f"退款金额 ¥{amount:.2f}",
+                "details": {
+                    "顾客": r.get("nickname"),
+                    "套餐": r.get("package_name"),
+                    "退款金额": f"¥{amount:.2f}",
+                    "扣除金额": f"¥{float(r.get('deducted_amount', 0)):.2f}",
+                    "退款原因": r.get("reason") or "无",
+                },
+                "fields": [],
+                "params": {"shop_id": shop_id, "refund_id": r.get("id")}
+            })
+
+        return {
+            "type": "batch_confirm",
+            "tool_name": "refund_approve",
+            "title": f"批量批准退款（共 {len(operations)} 笔）",
+            "message": f"确定要批准以下 {len(operations)} 笔退款申请吗？总金额 ¥{total_amount:.2f}",
+            "operations": operations,
+            "fields": [
+                {"name": "remark", "type": "input", "label": "审批备注", "required": False, "placeholder": "可选填写备注", "value": remark or ""}
+            ],
+            "buttons": [
+                {"type": "confirm", "label": "全部批准"},
+                {"type": "cancel", "label": "取消"}
+            ],
+            "action": "refund_approve",
+            "params": {"shop_id": shop_id, "refund_ids": refund_ids_str}
+        }
+    except Exception as e:
+        return {"type": "error", "message": f"批量查询失败: {str(e)}"}
+
+
+@tool(args_schema=RefundApproveInput)
+def refund_approve(shop_id: int, refund_id: str, remark: Optional[str] = None) -> dict:
+    """审批退款（批准）。支持单条和批量（逗号分隔ID）。返回确认框，需用户确认后执行。"""
+    try:
+        # ===== 批量模式检测 =====
+        if isinstance(refund_id, str) and ',' in refund_id:
+            return _batch_refund_approve(shop_id, refund_id, remark)
+
+        # ===== 单条模式：转为 int =====
+        refund_id_int = int(refund_id) if refund_id else 0
+
         # ===== 参数完整性检查：refund_id =====
-        if not refund_id or refund_id == 0:
+        if not refund_id_int or refund_id_int == 0:
             pending = execute_sql(
                 "SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount, rr.reason "
                 "FROM refund_records rr "
@@ -233,7 +302,7 @@ def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -
             LEFT JOIN customers c ON pu.customer_id = c.id
             WHERE rr.id = :refund_id AND pu.shop_id = :shop_id AND rr.is_deleted = 0
         """
-        refund = execute_sql(refund_sql, {"refund_id": refund_id, "shop_id": shop_id})
+        refund = execute_sql(refund_sql, {"refund_id": refund_id_int, "shop_id": shop_id})
         if not refund:
             return {"type": "error", "message": "退款记录不存在"}
         info = refund[0]
@@ -260,18 +329,86 @@ def refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None) -
                 {"type": "cancel", "label": "取消"}
             ],
             "action": "refund_approve",
-            "params": {"shop_id": shop_id, "refund_id": refund_id}
+            "params": {"shop_id": shop_id, "refund_id": refund_id_int}
         }
     except Exception as e:
         return {"type": "error", "message": f"查询失败: {str(e)}"}
 
 
-@tool(args_schema=RefundRejectInput)
-def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) -> dict:
-    """审批退款（拒绝）。返回确认框，需用户确认后执行。"""
+def _batch_refund_reject(shop_id: int, refund_ids_str: str, reason: Optional[str] = None) -> dict:
+    """批量退款拒绝 - 查询所有退款详情，返回批量确认弹窗"""
     try:
+        ids = [int(x.strip()) for x in refund_ids_str.split(',') if x.strip().isdigit()]
+        if not ids:
+            return {"type": "error", "message": "未找到有效的退款记录ID"}
+
+        placeholders = ','.join([str(id) for id in ids])
+        refunds = execute_sql(
+            f"SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount, rr.reason "
+            f"FROM refund_records rr "
+            f"JOIN purchases pu ON rr.purchase_id = pu.id "
+            f"JOIN packages p ON pu.package_id = p.id "
+            f"LEFT JOIN customers c ON pu.customer_id = c.id "
+            f"WHERE rr.id IN ({placeholders}) AND rr.status = 1 AND pu.shop_id = :shop_id AND rr.is_deleted = 0 "
+            f"ORDER BY rr.id",
+            {"shop_id": shop_id}
+        )
+
+        if not refunds:
+            return {"type": "error", "message": "未找到待处理的退款记录"}
+
+        operations = []
+        total_amount = 0
+        for r in refunds:
+            amount = float(r.get('refund_amount', 0))
+            total_amount += amount
+            operations.append({
+                "action": "refund_reject",
+                "title": f"{r.get('nickname')} - {r.get('package_name')}",
+                "message": f"退款金额 ¥{amount:.2f}",
+                "details": {
+                    "顾客": r.get("nickname"),
+                    "套餐": r.get("package_name"),
+                    "退款金额": f"¥{amount:.2f}",
+                    "退款原因": r.get("reason") or "无",
+                },
+                "fields": [],
+                "params": {"shop_id": shop_id, "refund_id": r.get("id")}
+            })
+
+        return {
+            "type": "batch_confirm",
+            "tool_name": "refund_reject",
+            "title": f"批量拒绝退款（共 {len(operations)} 笔）",
+            "message": f"确定要拒绝以下 {len(operations)} 笔退款申请吗？总金额 ¥{total_amount:.2f}",
+            "operations": operations,
+            "fields": [
+                {"name": "reason", "type": "input", "label": "拒绝理由", "required": True, "placeholder": "请输入拒绝原因", "value": reason or ""}
+            ],
+            "buttons": [
+                {"type": "confirm", "label": "全部拒绝"},
+                {"type": "cancel", "label": "取消"}
+            ],
+            "action": "refund_reject",
+            "params": {"shop_id": shop_id, "refund_ids": refund_ids_str}
+        }
+    except Exception as e:
+        return {"type": "error", "message": f"批量查询失败: {str(e)}"}
+
+
+@tool(args_schema=RefundRejectInput)
+def refund_reject(shop_id: int, refund_id: str, reason: Optional[str] = None) -> dict:
+    """审批退款（拒绝）。支持单条和批量（逗号分隔ID）。返回确认框，需用户确认后执行。"""
+    try:
+        # ===== 批量模式检测 =====
+        if isinstance(refund_id, str) and ',' in refund_id:
+            return _batch_refund_reject(shop_id, refund_id, reason)
+
+        # ===== 单条模式：转为 int =====
+        refund_id_int = int(refund_id) if refund_id else 0
+
         # ===== 参数完整性检查：refund_id =====
-        if not refund_id or refund_id == 0:
+        if not refund_id_int or refund_id_int == 0:
             # 查询待处理退款列表
             pending = execute_sql(
                 "SELECT rr.id, c.nickname, p.name as package_name, rr.refund_amount, rr.reason "
@@ -322,7 +459,7 @@ def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) ->
             LEFT JOIN customers c ON pu.customer_id = c.id
             WHERE rr.id = :refund_id AND pu.shop_id = :shop_id AND rr.is_deleted = 0
         """
-        refund = execute_sql(refund_sql, {"refund_id": refund_id, "shop_id": shop_id})
+        refund = execute_sql(refund_sql, {"refund_id": refund_id_int, "shop_id": shop_id})
         if not refund:
             return {"type": "error", "message": "退款记录不存在"}
         info = refund[0]
@@ -348,7 +485,7 @@ def refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None) ->
                 {"type": "cancel", "label": "取消"}
             ],
             "action": "refund_reject",
-            "params": {"shop_id": shop_id, "refund_id": refund_id}
+            "params": {"shop_id": shop_id, "refund_id": refund_id_int}
         }
     except Exception as e:
         return {"type": "error", "message": f"查询失败: {str(e)}"}
@@ -563,11 +700,26 @@ def game_session_finish(shop_id: int, game_session_id: int) -> dict:
 
 # ==================== 执行函数（确认后调用，带事务）====================
 
-def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] = None, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
-    """执行退款批准 - 代理调用 Java 后端 API"""
+def execute_refund_approve(shop_id: int, refund_id: int = None, refund_ids: str = None, remark: Optional[str] = None, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
+    """执行退款批准 - 代理调用 Java 后端 API。支持单条和批量。"""
     from app.common.backend_client import approve_refund
 
     try:
+        # 批量模式
+        if refund_ids:
+            ids = [int(x.strip()) for x in str(refund_ids).split(',') if x.strip().isdigit()]
+            results = []
+            success_count = 0
+            for rid in ids:
+                result = approve_refund(token=token or "", shop_id=shop_id, refund_id=rid)
+                if result.get("success"):
+                    success_count += 1
+                    results.append(f"ID{rid}:通过")
+                else:
+                    results.append(f"ID{rid}:{result.get('msg', '失败')}")
+            return f"批量审批完成，成功 {success_count}/{len(ids)} 笔。" + "；".join(results)
+
+        # 单条模式
         result = approve_refund(token=token or "", shop_id=shop_id, refund_id=refund_id)
         if result.get("success"):
             return "退款审批通过"
@@ -576,11 +728,26 @@ def execute_refund_approve(shop_id: int, refund_id: int, remark: Optional[str] =
         return f"审批失败: {str(e)}"
 
 
-def execute_refund_reject(shop_id: int, refund_id: int, reason: Optional[str] = None, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
-    """执行退款拒绝 - 代理调用 Java 后端 API"""
+def execute_refund_reject(shop_id: int, refund_id: int = None, refund_ids: str = None, reason: Optional[str] = None, operator_id: Optional[int] = None, token: Optional[str] = None) -> str:
+    """执行退款拒绝 - 代理调用 Java 后端 API。支持单条和批量。"""
     from app.common.backend_client import reject_refund
 
     try:
+        # 批量模式
+        if refund_ids:
+            ids = [int(x.strip()) for x in str(refund_ids).split(',') if x.strip().isdigit()]
+            results = []
+            success_count = 0
+            for rid in ids:
+                result = reject_refund(token=token or "", shop_id=shop_id, refund_id=rid, reason=reason or "")
+                if result.get("success"):
+                    success_count += 1
+                    results.append(f"ID{rid}:已拒绝")
+                else:
+                    results.append(f"ID{rid}:{result.get('msg', '失败')}")
+            return f"批量拒绝完成，成功 {success_count}/{len(ids)} 笔。" + "；".join(results)
+
+        # 单条模式
         result = reject_refund(token=token or "", shop_id=shop_id, refund_id=refund_id, reason=reason or "")
         if result.get("success"):
             return "退款已拒绝"

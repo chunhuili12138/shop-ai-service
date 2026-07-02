@@ -4,7 +4,7 @@
 """
 
 from typing import Any, Dict, List, Optional
-from langchain_core.prompts import ChatPromptTemplate
+from langchain_core.messages import HumanMessage
 from app.llm import get_chat_llm
 
 
@@ -40,8 +40,8 @@ class ResultExplainer:
         result_summary = self._prepare_result_summary(results, max_results_shown)
         
         # 调用 LLM 生成解释
-        explain_prompt = ChatPromptTemplate.from_template("""
-你是一个数据分析助手，负责将 SQL 查询结果转换为易懂的自然语言描述。
+        explain_prompt = """
+ 你是一个数据分析助手，负责将 SQL 查询结果转换为易懂的自然语言描述。
 
 ## 用户问题
 {question}
@@ -62,18 +62,16 @@ class ResultExplainer:
 5. 使用友好的语气，避免技术术语
 6. 如果结果较多，只总结主要信息
 
-请生成结果解释：""")
-        
+请生成结果解释：""".format(
+    question=question,
+    sql=sql,
+    total_count=len(results),
+    result_summary=result_summary
+)
+
         try:
             llm = get_chat_llm(temperature=0.3)
-            chain = explain_prompt | llm
-            
-            response = await chain.ainvoke({
-                "question": question,
-                "sql": sql,
-                "total_count": len(results),
-                "result_summary": result_summary
-            })
+            response = await llm.ainvoke([HumanMessage(content=explain_prompt)])
             
             return response.content.strip()
         
@@ -171,8 +169,8 @@ class ResultExplainer:
         if not results or len(results) < 2:
             return []
         
-        insights_prompt = ChatPromptTemplate.from_template("""
-基于以下查询结果，生成 2-3 个数据洞察或建议。
+        insights_prompt = """
+ 基于以下查询结果，生成 2-3 个数据洞察或建议。
 
 ## 用户问题
 {question}
@@ -186,19 +184,15 @@ class ResultExplainer:
 3. 如果发现异常或趋势，指出来
 4. 可以给出简单的建议
 
-请直接返回洞察列表，每行一个：""")
-        
+请直接返回洞察列表，每行一个：""".format(
+    question=question,
+    count=len(results),
+    result_summary=self._prepare_result_summary(results, 5)
+)
+
         try:
-            result_summary = self._prepare_result_summary(results, 5)
-            
             llm = get_chat_llm(temperature=0.3)
-            chain = insights_prompt | llm
-            
-            response = await chain.ainvoke({
-                "question": question,
-                "count": len(results),
-                "result_summary": result_summary
-            })
+            response = await llm.ainvoke([HumanMessage(content=insights_prompt)])
             
             # 解析洞察列表
             insights = [

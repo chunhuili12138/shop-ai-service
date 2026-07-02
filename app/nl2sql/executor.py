@@ -3,6 +3,7 @@ SQL执行器
 安全执行SQL并返回结果
 """
 
+import threading
 from sqlalchemy import create_engine, text
 from sqlalchemy.pool import QueuePool
 from app.config import settings
@@ -10,19 +11,22 @@ from app.config import settings
 
 # 创建数据库连接池
 _engine = None
+_engine_lock = threading.Lock()
 
 
 def get_engine():
-    """获取数据库引擎单例"""
+    """获取数据库引擎单例（双重检查锁定，线程安全）"""
     global _engine
     if _engine is None:
-        _engine = create_engine(
-            settings.MYSQL_URL,
-            poolclass=QueuePool,
-            pool_size=5,
-            max_overflow=10,
-            pool_timeout=30,
-        )
+        with _engine_lock:
+            if _engine is None:
+                _engine = create_engine(
+                    settings.MYSQL_URL,
+                    poolclass=QueuePool,
+                    pool_size=5,
+                    max_overflow=10,
+                    pool_timeout=30,
+                )
     return _engine
 
 

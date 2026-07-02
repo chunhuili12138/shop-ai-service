@@ -4,10 +4,36 @@ Redis会话管理模块
 """
 
 import json
+import logging
+import threading
 from typing import Optional
 from datetime import datetime
-from redis import Redis
+from redis import Redis, ConnectionPool
 from app.config import settings
+
+logger = logging.getLogger(__name__)
+
+
+# 全局 Redis 连接池（线程安全，避免每次创建新连接）
+_redis_pool = None
+_pool_lock = threading.Lock()
+
+
+def _get_redis_pool():
+    """获取全局 Redis 连接池"""
+    global _redis_pool
+    if _redis_pool is None:
+        with _pool_lock:
+            if _redis_pool is None:
+                _redis_pool = ConnectionPool(
+                    host=settings.REDIS_HOST,
+                    port=settings.REDIS_PORT,
+                    db=1,  # 使用db=1存储RAG会话
+                    password=settings.REDIS_PASSWORD or None,
+                    decode_responses=True,
+                    max_connections=20,
+                )
+    return _redis_pool
 
 
 class SessionManager:
@@ -17,7 +43,7 @@ class SessionManager:
     数据结构：
     - Key: rag:session:{session_id}
     - Value: List[JSON] 消息列表
-    - TTL: 1小时自动过期
+    - TTL: 可配置，默认3天
     
     会话隔离：
     - 不同session_id的会话完全隔离
@@ -25,14 +51,8 @@ class SessionManager:
     """
 
     def __init__(self):
-        self.redis = Redis(
-            host=settings.REDIS_HOST,
-            port=settings.REDIS_PORT,
-            db=1,  # 使用db=1存储RAG会话
-            password=settings.REDIS_PASSWORD or None,
-            decode_responses=True,
-        )
-        self.session_ttl = 86400 * 7  # 7天过期（原来1小时太短，会导致会话丢失）
+        self.redis = Redis(connection_pool=_get_redis_pool())
+        self.session_ttl = settings.REDIS_SESSION_TTL or 259200  # 默认3天
 
     def get_history(self, session_id: str) -> list[dict]:
         """
@@ -403,9 +423,40 @@ class SessionManager:
             return summary
             
         except Exception as e:
-            print(f"[SessionManager] 压缩历史失败: {str(e)}")
+            logger.warning(f"压缩历史失败: {str(e)}")
             # 压缩失败时返回简化版本
             return f"（历史记录压缩失败，共 {len(messages)} 条消息）"
+
+    def cleanup_expired_sessions(self, max_sessions_per_user: int = 50):
+        """
+        清理每个用户的多余会话（按更新时间保留最新的 N 个）
+
+        Args:
+            max_sessions_per_user: 每个用户最大保留会话数
+        """
+        try:
+            for key in self.redis.scan_iter("rag:user_sessions:*"):
+                sessions = list(self.redis.smembers(key))
+                if len(sessions) <= max_sessions_per_user:
+                    continue
+
+                sessions_with_time = []
+                for sid in sessions:
+                    meta = self.redis.get(f"rag:session:{sid}:meta")
+                    if meta:
+                        try:
+                            m = json.loads(meta)
+                            sessions_with_time.append((sid, m.get("updated_at", "")))
+                        except json.JSONDecodeError:
+                            continue
+
+                sessions_with_time.sort(key=lambda x: x[1])
+                for sid, _ in sessions_with_time[:len(sessions_with_time) - max_sessions_per_user]:
+                    self.clear_session(sid)
+
+            logger.info(f"会话清理完成，保留上限={max_sessions_per_user}/用户")
+        except Exception as e:
+            logger.warning(f"会话清理失败: {str(e)}")
 
     def _merge_conversations(self, user_msgs: list, ai_msgs: list) -> list:
         """
